@@ -1,0 +1,19 @@
+[package]
+name = "signed-intents"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "signed_intents"
+path = "src/lib.rs"
+
+[dependencies]
+miden-protocol = { version = "0.14" }
+miden-client = { version = "0.14", features = ["testing"] }
+hex = "0.4"
+rand = "0.9"
+
+[dev-dependencies]
+# MockChain harness lives behind the miden-client `testing` feature in 0.14.
+# Task 2 confirms the exact import path during the spike and adjusts if needed.
+tokio = { version = "1.46", features = ["rt-multi-thread", "macros"] }
