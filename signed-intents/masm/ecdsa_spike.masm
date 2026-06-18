@@ -1,0 +1,75 @@
+# ECDSA-K256-Keccak on-chain verify — ABI spike (Task 2).
+#
+# VERIFIED against the ACTUALLY-RESOLVED 0.14 dependency tree on 2026-06-18
+# (miden-protocol 0.14.5, miden-client 0.14.9 `testing`, miden-testing 0.14.6,
+#  and — important — miden-core-lib 0.22.4 / miden-assembly 0.22.4):
+#   - miden-core-lib 0.22.4  asm/crypto/dsa/ecdsa_k256_keccak.masm  (the `verify` proc)
+#   - miden-protocol 0.14.5  src/account/auth.rs  (Signature::to_prepared_signature,
+#                                                  PublicKey::to_commitment)
+#   - miden-testing  0.14.6  MockHost loads CoreLibrary().handlers(), so the
+#                            ECDSA_VERIFY_EVENT precompile handler is registered and
+#                            pushes the boolean result back onto the advice stack.
+#
+# ABI NOTE — the 0.14 core-lib `verify` proc loads the advice stack with
+# `padw adv_loadw` + `adv_push.1` (NOT `adv_pushw`, which does not exist in the
+# resolved assembler 0.22.4). This script mirrors that idiom.
+#
+# VERIFIED ABI for `ecdsa_k256_keccak::verify`:
+#   import : use miden::core::crypto::dsa::ecdsa_k256_keccak
+#   operand: [PK_COMM, MSG, ...]
+#     - PK_COMM = Poseidon2 commitment to the 33-byte compressed pubkey (a Word).
+#                 Equals `PublicKey::to_commitment()` in Rust.
+#     - MSG     = the signed message (a Word, 4 felts).
+#   advice : [PK[9], SIG[17], ...]  (verify reads top-first via `padw adv_loadw` + `adv_push.1`)
+#     - PK[9]  = 33-byte compressed secp256k1 pubkey packed as 9 little-endian u32 felts.
+#     - SIG[17]= 65-byte ECDSA signature packed as 17 little-endian u32 felts.
+#     - These 26 felts are exactly `Signature::to_prepared_signature(msg)` (PK||SIG),
+#       which for ECDSA == miden_core_lib::dsa::ecdsa_k256_keccak::encode_signature(pk,sig).
+#       NOTE: to_prepared_signature() RECOVERS the pubkey from (msg, sig), so PK[9] is the
+#       pubkey that signed `msg`. For the original signer over the original message this
+#       equals public_key, hence PK_COMM == public_key.to_commitment().
+#   result : no return value. The proc ASSERTS internally:
+#     - that PK[9] hashes to PK_COMM ("invalid public key commitment"), and
+#     - that the signature verifies ("ECDSA signature verification failed").
+#     A clean run == valid signature; an aborted tx == invalid.
+#
+# ADVICE-STACK ORDERING (pinned): `AdviceInputs::with_stack(iter)` stores the iterator
+# verbatim and the VM pops from the FRONT, so the FIRST felt of the vector is the TOP of
+# the advice stack (first consumed). NO reversal is applied by the harness.
+#
+# MOCKCHAIN HARNESS (pinned, see tests/spike.rs):
+#   - account : MockChain::builder().add_existing_wallet(Auth::IncrNonce)  — IncrNonce gives
+#               the tx a state change so it is not rejected as a no-op; Auth::Noop fails with
+#               "executed transaction neither changed the account state, nor consumed any notes".
+#   - script  : miden_client::assembly::CodeBuilder::default().compile_tx_script(THIS_FILE)
+#   - advice  : mock_chain.build_tx_context(acct, &[], &[])?.tx_script(script)
+#                 .extend_advice_inputs(AdviceInputs::default().with_stack(
+#                     [MSG(4), PK_COMM(4), PK(9), SIG(17)]))  — top-first, no reversal
+#   - run     : tx_context.execute().await  (Ok == valid; Err mapped to false)
+#
+# This spike file is a complete TRANSACTION SCRIPT. The harness injects, on the advice
+# stack from the top: MSG(4), PK_COMM(4), PK(9), SIG(17). The script lifts MSG and PK_COMM
+# onto the operand stack as [PK_COMM, MSG], leaving [PK(9), SIG(17)] on the advice stack
+# for `verify` to consume.
+#
+# Task 5 (authorizer.masm) consumes this exact ABI; there PK_COMM/MSG come from account
+# storage + note inputs (not the advice stack), and only PK(9)+SIG(17) ride the advice stack.
+
+use miden::core::crypto::dsa::ecdsa_k256_keccak
+
+begin
+    # Advice stack (top-first): [MSG, PK_COMM, PK[9], SIG[17]]
+    # `padw adv_loadw` pushes an empty word then overwrites it with 4 advice felts
+    # (assembler 0.22.4 has no `adv_pushw`; this is the equivalent idiom).
+    padw adv_loadw
+    # OS => [MSG]
+    # AS => [PK_COMM, PK[9], SIG[17]]
+
+    padw adv_loadw
+    # OS => [PK_COMM, MSG]
+    # AS => [PK[9], SIG[17]]
+
+    exec.ecdsa_k256_keccak::verify
+    # OS => []   (aborts the tx if the signature is invalid)
+    # AS => []
+end

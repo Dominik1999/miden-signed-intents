@@ -1,0 +1,52 @@
+//! The transfer intent and its canonical, signable encoding.
+
+use miden_protocol::crypto::hash::poseidon2::Poseidon2;
+use miden_protocol::{Felt, Word};
+
+/// Domain-separation tag — stops a signature for one action type being
+/// replayed as another. See the cancel/withdraw tags in the perp repo.
+pub const DOMAIN_TRANSFER: u64 = 1;
+
+/// A user's authorization to move `amount` to a recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Intent {
+    pub recipient_prefix: u64,
+    pub recipient_suffix: u64,
+    pub amount: u64,
+    /// Per-account strictly-increasing replay guard.
+    pub nonce: u64,
+    /// Intent is invalid once the chain reaches this block height.
+    pub expiry_block: u64,
+}
+
+impl Intent {
+    /// The exact field elements that are hashed to the signed Word.
+    /// MUST match the TypeScript `intentFelts` ordering byte-for-byte.
+    pub fn canonical_felts(&self) -> Vec<u64> {
+        vec![
+            DOMAIN_TRANSFER,
+            self.recipient_prefix,
+            self.recipient_suffix,
+            self.amount,
+            self.nonce,
+            self.expiry_block,
+        ]
+    }
+
+    /// The Word the user signs.
+    pub fn message_word(&self) -> Word {
+        message_word(&self.canonical_felts())
+    }
+}
+
+/// Hash a canonical felt vector to the signable Word.
+///
+/// Uses Poseidon2 (the protocol's canonical `Hasher`), which is the algebraic hash the
+/// Miden VM reconstructs on-chain via the native `hperm` instruction. The authorizer
+/// component (Task 5) rebuilds this exact Word inside the transaction to verify the
+/// signature; using any other algebraic hash (e.g. RPO) would be impossible to reproduce
+/// on-chain in this toolchain, since the VM exposes no RPO permutation instruction.
+pub fn message_word(felts: &[u64]) -> Word {
+    let elements: Vec<Felt> = felts.iter().map(|&v| Felt::new(v)).collect();
+    Poseidon2::hash_elements(&elements)
+}

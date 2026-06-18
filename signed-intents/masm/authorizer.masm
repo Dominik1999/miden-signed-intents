@@ -1,0 +1,226 @@
+# Authorizer account component (Task 5).
+#
+# Verifies a user's ECDSA-K256-Keccak transfer intent ON-CHAIN, then records the
+# authorized payload to storage. NoAuth at the protocol level: `execute_intent`
+# IS the entire authorization boundary — a relayer cannot forge, tamper with, or
+# replay an intent, because every check below runs inside the transaction.
+#
+# Exported proc: `execute_intent`, invoked from a transaction script via `call`.
+#
+#   Operand inputs : [DOMAIN_TRANSFER, recipient_prefix, recipient_suffix,
+#                     amount, nonce, expiry_block, pad(10)]   (call pads to 16)
+#   Advice inputs  : [PK[9], SIG[17], ...]   (pushed by the relayer)
+#   Operand output : [pad(16)]               (all inputs consumed)
+#
+#   Storage (named slots; the first two felts of each hashed slot name address it):
+#     slot "owner_pubkey_commitment" : Word, the ECDSA pubkey commitment (security boundary)
+#     slot "last_nonce"              : Word, last accepted nonce in element 0  (replay guard)
+#     slot "last_authorized"         : Word — on-stack order at set_item is [nonce, amount, r_suf, r_pre]
+#                                          (nonce=TOP), produced by loc_loadw_le reversing the stored
+#                                          [r_pre, r_suf, amount, nonce]; Rust Word indexing:
+#                                          word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce
+#
+# ----------------------------------------------------------------------------------------------
+# VERIFIED ABI (installed 0.14 tree: miden-protocol 0.14.5, miden-core-lib 0.22.4,
+#               miden-standards 0.14.5):
+#   - miden::core::crypto::dsa::ecdsa_k256_keccak::verify
+#       operand [PK_COMM, MSG] -> []   (aborts on bad commitment or bad signature);
+#       advice  [PK[9], SIG[17]]. Pinned by the Task 2 spike.
+#   - miden::protocol::active_account::get_item
+#       [slot_id_suffix, slot_id_prefix] -> [VALUE]
+#   - miden::protocol::native_account::set_item
+#       [slot_id_suffix, slot_id_prefix, VALUE] -> [OLD_VALUE]
+#   - miden::protocol::tx::get_block_number  [] -> [num]
+#   - native `hperm` : the VM's algebraic permutation on stack state [R0, R1, C, ...]
+#       (R0 on top = rate[0..4]), output [R0', R1', C', ...]; digest = R0'.
+#       IMPORTANT: in this toolchain (miden-assembly 0.22.4) `hperm` computes POSEIDON2, NOT
+#       RPO — see the assembler's own `hmerge`/`hash` lowering, which documents hperm as the
+#       "Poseidon2 permutation". The VM exposes no RPO permutation instruction. Verified by
+#       execution: the hperm digest of the 6 sample felts equals Rust
+#       `Poseidon2::hash_elements` byte-for-byte. Therefore the off-chain intent message
+#       (intent.rs) is hashed with Poseidon2, the protocol's canonical `Hasher`, so it is
+#       reconstructible here.
+#
+# MSG RECONSTRUCTION (the riskiest new piece):
+#   MSG = Poseidon2::hash_elements([DOMAIN, r_pre, r_suf, amount, nonce, expiry]) (6 elements).
+#   `hash_elements` (miden-crypto algebraic_sponge, shared padding rule): zero the 12-element
+#   state, set capacity element 8 = (len % RATE_WIDTH) = (6 % 8) = 6, absorb the 6 felts into
+#   rate positions 0..5, zero-pad rate positions 6,7, apply ONE permutation, digest = state[0..4].
+#   The AEAD `init_state` proc pins the stack->state mapping: the TOP word of the stack is
+#   rate[0..4] with its top element = state[0]. So pushing the message as
+#   [m0, m1, m2, m3,  m4, m5, 0, 0,  6, 0, 0, 0] (top -> down) gives state[i]=m_i for i<6,
+#   state[6]=state[7]=0, state[8]=6 — exactly the Rust padding. One `hperm`, take R0.
+# ----------------------------------------------------------------------------------------------
+
+use miden::core::crypto::dsa::ecdsa_k256_keccak
+use miden::core::sys
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::protocol::tx
+
+# Named storage slots. The first two felts of the hashed name address the slot.
+const OWNER_PK_SLOT  = word("signed_intents::authorizer::owner_pubkey_commitment")
+const LAST_NONCE_SLOT = word("signed_intents::authorizer::last_nonce")
+const LAST_AUTH_SLOT  = word("signed_intents::authorizer::last_authorized")
+
+const DOMAIN_TRANSFER = 1
+
+# Sponge capacity initializer for a 6-element input: 6 % RATE_WIDTH(8) = 6.
+const HASH_CAP_6 = 6
+
+const ERR_BAD_DOMAIN = "authorizer: intent domain tag must be DOMAIN_TRANSFER"
+const ERR_STALE_NONCE = "authorizer: intent nonce must exceed the stored last_nonce"
+const ERR_EXPIRED = "authorizer: intent has expired (block height >= expiry_block)"
+
+#! Verifies a signed transfer intent on-chain and records it.
+#!
+#! Inputs:  [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad(10)]
+#! Outputs: [pad(16)]
+#! Advice:  [PK[9], SIG[17], ...]
+#!
+#! Invocation: call
+@locals(8)
+pub proc execute_intent
+    # Stack in: [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad(10)].
+    # We work only on the top 6 inputs; the call padding underneath is left untouched
+    # (the transaction kernel manages it at the call boundary, as in the standard
+    # account-component procedures).
+
+    # --- 0. Sanity: domain tag must be DOMAIN_TRANSFER. ---
+    dup
+    push.DOMAIN_TRANSFER assert_eq.err=ERR_BAD_DOMAIN
+    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+
+    # Stash the values we still need AFTER hashing into local memory, so the hash can consume
+    # the 6 operand felts without us having to keep a stack duplicate (a stack duplicate would
+    # spill into the overflow table and break the strict depth-16 `call` return contract).
+    #   addr 0 : [r_pre, r_suf, amount, nonce]   (stored order; loc_loadw_le reverses to
+    #             [nonce, amount, r_suf, r_pre] at set_item — nonce=TOP; Rust Word:
+    #             word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce)
+    #   addr 4 : [nonce, expiry, 0, 0]           (carried scalars for the replay/expiry checks)
+    # Local word addresses must be word-aligned (multiples of 4).
+    dup.4 dup.4 dup.4 dup.4
+    # => [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # Derivation: starting from [DOMAIN(0), r_pre(1), r_suf(2), amount(3), nonce(4), expiry(5)]:
+    #   dup.4 → nonce:  [nonce,   DOMAIN, r_pre, r_suf, amount, nonce, expiry]  (r_pre now at pos 2)
+    #   dup.4 → amount: [amount,  nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 3)
+    #   dup.4 → r_suf:  [r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 4)
+    #   dup.4 → r_pre:  [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    loc_storew_le.0 dropw
+    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    dup.4 dup.6 push.0 push.0
+    # => [nonce, expiry, 0, 0, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    loc_storew_le.4 dropw
+    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+
+    # --- 1. Rebuild MSG = Poseidon2::hash_elements([DOMAIN, r_pre, r_suf, amount, nonce, expiry]). ---
+    # Build the Poseidon2 sponge state, consuming the 6 operand felts.
+    # Target stack (top->down): [m0,m1,m2,m3, m4,m5,0,0, cap,0,0,0]  then `hperm`.
+    # The 6 operand felts are [DOMAIN(m0), r_pre(m1), r_suf(m2), amount(m3), nonce(m4), expiry(m5)].
+    push.0 push.0
+    # => [0, 0, m0,m1,m2,m3,m4,m5, pad...]
+    movdn.7 movdn.7
+    # => [m0,m1,m2,m3, m4,m5,0,0, pad...]
+    push.0 push.0 push.0 push.HASH_CAP_6
+    # => [cap,0,0,0, m0,m1,m2,m3, m4,m5,0,0, pad...]
+    # The capacity word must be the deepest of the 12-element state (positions 8..12).
+    movdnw.2
+    # => [m0,m1,m2,m3, m4,m5,0,0, cap,0,0,0, pad...]
+    hperm
+    # => [R0(4), R1(4), C(4), pad...]   digest = R0
+    exec.squeeze_rate0
+    # => [MSG(4), pad...]
+
+    # --- 2. Load committed pubkey from storage and verify the signature. ---
+    push.OWNER_PK_SLOT[0..2] exec.active_account::get_item
+    # => [PK_COMM, MSG, pad...]
+    exec.ecdsa_k256_keccak::verify
+    # => [pad...]   (aborts the tx if commitment or signature is invalid)
+
+    # --- 3. Replay guard: intent nonce must exceed the stored last_nonce. ---
+    # loc_storew_le/loc_loadw_le round-trip: the nonce was stashed as the DEEPEST of the 4
+    # elements at addr 4 (stack at store time was [0, 0, expiry, nonce] with 0=TOP, so nonce
+    # was at depth 3). On load, the same ordering is restored.
+    padw loc_loadw_le.4
+    # => [0, 0, expiry, nonce, pad...]
+    drop drop drop
+    # => [nonce, pad...]
+    #
+    # get_item returns VALUE with word[0] at TOP. The nonce was stored as the DEEPEST element of
+    # the written VALUE (push.0 push.0 push.0 leaves [0,0,0,nonce] with 0=TOP, nonce=deepest=word[3]).
+    # After get_item the stack has VALUE reversed relative to storage, so nonce_stored is at depth 3:
+    #   [word[0]=0, word[1]=0, word[2]=0, word[3]=nonce_stored, nonce_intent, pad...]
+    # Drop the three zero pads to expose nonce_stored, then compare.
+    push.LAST_NONCE_SLOT[0..2] exec.active_account::get_item
+    # => [0, 0, 0, nonce_stored, nonce_intent, pad...]
+    drop drop drop
+    # => [nonce_stored, nonce_intent, pad...]
+    # u32gt reads [b, a] (b=TOP) -> computes `a > b`. We want nonce_intent > nonce_stored.
+    # Stack is [nonce_stored=TOP, nonce_intent], so b=nonce_stored, a=nonce_intent. Correct.
+    u32assert2.err=ERR_STALE_NONCE
+    u32gt assert.err=ERR_STALE_NONCE
+    # u32gt asserts nonce_intent > nonce_stored; aborts if not.
+    # => [pad...]
+
+    # Write the new nonce back to slot "last_nonce".
+    # Push.0 three times BEFORE nonce means nonce is the DEEPEST of the four elements passed
+    # as VALUE to set_item. mem_storew_le maps stack position to word[] as:
+    #   stack[TOP=0]=0 -> word[0]=0, stack[1]=0 -> word[1]=0, stack[2]=0 -> word[2]=0,
+    #   stack[3]=nonce -> word[3]=nonce.
+    # The read in step 3 above now correctly drops word[0..2] and reads word[3]=nonce.
+    padw loc_loadw_le.4
+    # => [0, 0, expiry, nonce, pad...]  (reversed round-trip, see note above)
+    drop drop drop
+    # => [nonce, pad...]
+    push.0 push.0 push.0
+    # => [0, 0, 0, nonce, pad...]  (0=TOP; nonce is deepest, lands at word[3])
+    push.LAST_NONCE_SLOT[0..2] exec.native_account::set_item
+    # => [OLD_NONCE_WORD, pad...]
+    dropw
+    # => [pad...]
+
+    # --- 4. Expiry: current block height must be < expiry_block. ---
+    exec.tx::get_block_number
+    # => [block_num, pad...]
+    padw loc_loadw_le.4
+    # => [0, 0, expiry, nonce, block_num, pad...]  (reversed round-trip)
+    drop drop
+    # => [expiry, nonce, block_num, pad...]
+    swap drop
+    # => [expiry, block_num, pad...]
+    swap
+    # => [block_num, expiry, pad...]
+    # Comparison reads [b, a] (b on top) -> `a OP b`. With [block_num, expiry] this is
+    # `expiry > block_num`, i.e. the intent has not yet expired.
+    u32assert2.err=ERR_EXPIRED
+    u32gt assert.err=ERR_EXPIRED
+    # => [pad...]
+
+    # --- 5. Record authorized payload to slot "last_authorized". ---
+    # The record word was stashed at addr 0 as [r_pre, r_suf, amount, nonce]; the le round-trip
+    # loads it reversed as [nonce, amount, r_suf, r_pre]. We store that reversed word as the
+    # audit record here; Task 6 (which reads this slot back) accounts for the same ordering.
+    padw loc_loadw_le.0
+    # => [nonce, amount, r_suf, r_pre, pad...]
+    push.LAST_AUTH_SLOT[0..2] exec.native_account::set_item
+    # => [OLD_AUTH_WORD, pad...]
+    dropw
+    # => [pad...]
+
+    # The kernel storage syscalls and the hash leave residual words in the overflow table, so
+    # the operand stack is deeper than 16. A `call`ed procedure must return at depth exactly 16;
+    # `sys::truncate_stack` drops the deep overflow while preserving the (irrelevant) top 16.
+    exec.sys::truncate_stack
+    # => [pad(16)]
+end
+
+#! Returns the first rate word (digest) of a Poseidon2 sponge state and drops the rest.
+#!
+#! Inputs:  [R0, R1, C, ...]
+#! Outputs: [R0, ...]
+#!
+#! Invocation: exec
+proc squeeze_rate0
+    swapw.2 dropw dropw
+    # => [R0, ...]
+end

@@ -1,0 +1,23 @@
+[package]
+name = "signed-intents"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "signed_intents"
+path = "src/lib.rs"
+
+[dependencies]
+miden-protocol = { version = "0.14" }
+miden-client = { version = "0.14", features = ["testing"] }
+# miden-testing is a direct dependency of relayer.rs (MockChain lives there).
+miden-testing = { version = "0.14" }
+hex = "0.4"
+rand = "0.9"
+# tokio is used by relayer.rs to block on async execute() calls.
+tokio = { version = "1.46", features = ["rt"] }
+
+[dev-dependencies]
+# Additional tokio features for test harnesses.
+tokio = { version = "1.46", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"
