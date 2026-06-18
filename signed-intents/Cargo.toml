@@ -17,3 +17,6 @@ rand = "0.9"
 # MockChain harness lives behind the miden-client `testing` feature in 0.14.
 # Task 2 confirms the exact import path during the spike and adjusts if needed.
 tokio = { version = "1.46", features = ["rt-multi-thread", "macros"] }
+# Task 5 authorizer oracle test builds a custom account component + tx context directly.
+miden-testing = { version = "0.14" }
+anyhow = "1"
