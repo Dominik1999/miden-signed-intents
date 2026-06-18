@@ -244,6 +244,17 @@ pub fn read_last_nonce(chain: &MockChain, d: &DeployedAuthorizer) -> u64 {
     word[3].as_canonical_u64()
 }
 
+/// Advance the `MockChain` by `n` empty blocks.
+///
+/// Each call to `prove_next_block` with no pending transactions creates an empty block that
+/// still increments the chain's block height. Use this in expiry tests to move the chain
+/// clock forward without executing any intent transaction.
+pub fn advance_blocks(chain: &mut MockChain, n: u32) {
+    for _ in 0..n {
+        chain.prove_next_block().expect("advance_blocks: prove_next_block must succeed");
+    }
+}
+
 /// Read the `last_authorized` word (slot 2) from the committed account state.
 ///
 /// The MASM stashes `[r_pre, r_suf, amount, nonce]` (r_pre = TOP) into local memory at addr 0

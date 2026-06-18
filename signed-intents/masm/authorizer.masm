@@ -138,33 +138,42 @@ pub proc execute_intent
     # => [pad...]   (aborts the tx if commitment or signature is invalid)
 
     # --- 3. Replay guard: intent nonce must exceed the stored last_nonce. ---
-    # loc_storew_le/loc_loadw_le round-trip a Word in reversed element order, so the word we
-    # stored as [nonce, expiry, 0, 0] loads back as [0, 0, expiry, nonce] (nonce deepest).
+    # loc_storew_le/loc_loadw_le round-trip: the nonce was stashed as the DEEPEST of the 4
+    # elements at addr 4 (stack at store time was [0, 0, expiry, nonce] with 0=TOP, so nonce
+    # was at depth 3). On load, the same ordering is restored.
     padw loc_loadw_le.4
     # => [0, 0, expiry, nonce, pad...]
     drop drop drop
     # => [nonce, pad...]
+    #
+    # get_item returns VALUE with word[0] at TOP. The nonce was stored as the DEEPEST element of
+    # the written VALUE (push.0 push.0 push.0 leaves [0,0,0,nonce] with 0=TOP, nonce=deepest=word[3]).
+    # After get_item the stack has VALUE reversed relative to storage, so nonce_stored is at depth 3:
+    #   [word[0]=0, word[1]=0, word[2]=0, word[3]=nonce_stored, nonce_intent, pad...]
+    # Drop the three zero pads to expose nonce_stored, then compare.
     push.LAST_NONCE_SLOT[0..2] exec.active_account::get_item
-    # => [last_nonce, 0, 0, 0, nonce, pad...]   (last_nonce in element 0 of the slot Word)
-    movup.4
-    # => [nonce, last_nonce, 0, 0, 0, pad...]
-    # Miden comparison ops read [b, a] (b on top) -> `a OP b`. We want `nonce > last_nonce`,
-    # so present the stack as [last_nonce, nonce] before u32gt.
-    swap
-    # => [last_nonce, nonce, 0, 0, 0, pad...]
+    # => [0, 0, 0, nonce_stored, nonce_intent, pad...]
+    drop drop drop
+    # => [nonce_stored, nonce_intent, pad...]
+    # u32gt reads [b, a] (b=TOP) -> computes `a > b`. We want nonce_intent > nonce_stored.
+    # Stack is [nonce_stored=TOP, nonce_intent], so b=nonce_stored, a=nonce_intent. Correct.
     u32assert2.err=ERR_STALE_NONCE
     u32gt assert.err=ERR_STALE_NONCE
-    # => [0, 0, 0, pad...]
-    drop drop drop
+    # u32gt asserts nonce_intent > nonce_stored; aborts if not.
     # => [pad...]
 
-    # Write the new nonce back to slot "last_nonce" as the Word [nonce, 0, 0, 0].
+    # Write the new nonce back to slot "last_nonce".
+    # Push.0 three times BEFORE nonce means nonce is the DEEPEST of the four elements passed
+    # as VALUE to set_item. mem_storew_le maps stack position to word[] as:
+    #   stack[TOP=0]=0 -> word[0]=0, stack[1]=0 -> word[1]=0, stack[2]=0 -> word[2]=0,
+    #   stack[3]=nonce -> word[3]=nonce.
+    # The read in step 3 above now correctly drops word[0..2] and reads word[3]=nonce.
     padw loc_loadw_le.4
     # => [0, 0, expiry, nonce, pad...]  (reversed round-trip, see note above)
     drop drop drop
     # => [nonce, pad...]
     push.0 push.0 push.0
-    # => [nonce, 0, 0, 0, pad...]
+    # => [0, 0, 0, nonce, pad...]  (0=TOP; nonce is deepest, lands at word[3])
     push.LAST_NONCE_SLOT[0..2] exec.native_account::set_item
     # => [OLD_NONCE_WORD, pad...]
     dropw
