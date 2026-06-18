@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { intentFelts, messageWord, signIntent } from "./signIntent.js";
+import { intentFelts, messageWord, signIntent, wordToHex } from "./signIntent.js";
 import { AuthSecretKey, PublicKey, Signature } from "@miden-sdk/miden-sdk";
 
 const SAMPLE = {
@@ -37,27 +37,9 @@ describe("signed intent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Helpers (also used by signIntent.ts implementation — duplicated here for
-// test self-containment so the test can stand alone as a spec).
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** Serialise a Word as 4 × little-endian u64 bytes = 32 bytes, hex-encoded. */
-function wordToHex(word: import("@miden-sdk/miden-sdk").Word): string {
-  const u64s = word.toU64s(); // BigUint64Array of 4 elements
-  const buf = new Uint8Array(32);
-  for (let i = 0; i < 4; i++) {
-    let v = u64s[i];
-    for (let b = 0; b < 8; b++) {
-      buf[i * 8 + b] = Number(v & 0xffn);
-      v >>= 8n;
-    }
-  }
-  return bytesToHex(buf);
-}
-
-function bytesToHex(b: Uint8Array): string {
-  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
 function hexToBytes(h: string): Uint8Array {
   const s = h.startsWith("0x") ? h.slice(2) : h;
   return new Uint8Array(s.match(/.{1,2}/g)!.map((x) => parseInt(x, 16)));

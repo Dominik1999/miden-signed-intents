@@ -50,7 +50,7 @@ export function messageWord(felts: bigint[]): Word {
  * Montgomery form) and does NOT match the Rust golden — do not use it for
  * cross-language agreement.
  */
-function wordToHex(word: Word): string {
+export function wordToHex(word: Word): string {
   const u64s = word.toU64s(); // BigUint64Array[4]
   const buf = new Uint8Array(32);
   for (let i = 0; i < 4; i++) {
