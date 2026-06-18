@@ -94,8 +94,13 @@ pub proc execute_intent
     #   addr 0 : [r_pre, r_suf, amount, nonce]   (the record word for slot "last_authorized")
     #   addr 4 : [nonce, expiry, 0, 0]           (carried scalars for the replay/expiry checks)
     # Local word addresses must be word-aligned (multiples of 4).
-    dup.1 dup.3 dup.4 dup.5
+    dup.4 dup.4 dup.4 dup.4
     # => [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # Derivation: starting from [DOMAIN(0), r_pre(1), r_suf(2), amount(3), nonce(4), expiry(5)]:
+    #   dup.4 → nonce:  [nonce,   DOMAIN, r_pre, r_suf, amount, nonce, expiry]  (r_pre now at pos 2)
+    #   dup.4 → amount: [amount,  nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 3)
+    #   dup.4 → r_suf:  [r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 4)
+    #   dup.4 → r_pre:  [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
     loc_storew_le.0 dropw
     # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
     dup.4 dup.6 push.0 push.0
