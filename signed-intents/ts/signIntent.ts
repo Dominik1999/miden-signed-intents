@@ -2,7 +2,7 @@ import {
   AuthSecretKey,
   Felt,
   FeltArray,
-  Rpo256,
+  Poseidon2,
   Signature,
   type Word,
 } from "@miden-sdk/miden-sdk";
@@ -35,7 +35,7 @@ export function intentFelts(i: IntentInput): bigint[] {
 /** Hash the canonical felts to the signable Word. */
 export function messageWord(felts: bigint[]): Word {
   const elements = felts.map((v) => new Felt(v));
-  return Rpo256.hashElements(new FeltArray(elements));
+  return Poseidon2.hashElements(new FeltArray(elements));
 }
 
 /**

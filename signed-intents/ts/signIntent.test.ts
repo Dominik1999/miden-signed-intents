@@ -11,10 +11,10 @@ const SAMPLE = {
   expiryBlock: 500n,
 };
 
-// Frozen in Task 3 from the Rust golden run. Cross-language agreement check.
+// Frozen in Task 4 from the Rust golden run (Poseidon2). Cross-language agreement check.
 // Rust Word::as_bytes() = 4 × little-endian u64 values concatenated, hex-encoded.
 const GOLDEN_WORD_HEX =
-  "ead149459c102c63dffeadd553e3bd50ae48d32af53267ad42eb49c0382a3136";
+  "51dca2817b795ff469c66a03bbe4a5c2145458b6e1df4d257eb47e835f309622";
 
 describe("signed intent", () => {
   it("encodes canonical felts in the agreed order", () => {
