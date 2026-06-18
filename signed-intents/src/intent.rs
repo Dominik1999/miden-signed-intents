@@ -1,6 +1,6 @@
 //! The transfer intent and its canonical, signable encoding.
 
-use miden_client::crypto::Rpo256;
+use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::{Felt, Word};
 
 /// Domain-separation tag — stops a signature for one action type being
