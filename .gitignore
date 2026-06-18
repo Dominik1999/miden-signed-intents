@@ -1,0 +1,12 @@
+# Nested repo — tracked separately
+agentic-template/
+
+# Build artifacts
+target/
+**/target/
+node_modules/
+**/node_modules/
+*.crate
+
+# Editor / OS
+.DS_Store
