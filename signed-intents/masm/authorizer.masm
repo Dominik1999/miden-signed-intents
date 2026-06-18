@@ -15,7 +15,10 @@
 #   Storage (named slots; the first two felts of each hashed slot name address it):
 #     slot "owner_pubkey_commitment" : Word, the ECDSA pubkey commitment (security boundary)
 #     slot "last_nonce"              : Word, last accepted nonce in element 0  (replay guard)
-#     slot "last_authorized"         : Word [r_pre, r_suf, amount, nonce]      (audit record)
+#     slot "last_authorized"         : Word — on-stack order at set_item is [nonce, amount, r_suf, r_pre]
+#                                          (nonce=TOP), produced by loc_loadw_le reversing the stored
+#                                          [r_pre, r_suf, amount, nonce]; Rust Word indexing:
+#                                          word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce
 #
 # ----------------------------------------------------------------------------------------------
 # VERIFIED ABI (installed 0.14 tree: miden-protocol 0.14.5, miden-core-lib 0.22.4,
@@ -91,7 +94,9 @@ pub proc execute_intent
     # Stash the values we still need AFTER hashing into local memory, so the hash can consume
     # the 6 operand felts without us having to keep a stack duplicate (a stack duplicate would
     # spill into the overflow table and break the strict depth-16 `call` return contract).
-    #   addr 0 : [r_pre, r_suf, amount, nonce]   (the record word for slot "last_authorized")
+    #   addr 0 : [r_pre, r_suf, amount, nonce]   (stored order; loc_loadw_le reverses to
+    #             [nonce, amount, r_suf, r_pre] at set_item — nonce=TOP; Rust Word:
+    #             word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce)
     #   addr 4 : [nonce, expiry, 0, 0]           (carried scalars for the replay/expiry checks)
     # Local word addresses must be word-aligned (multiples of 4).
     dup.4 dup.4 dup.4 dup.4

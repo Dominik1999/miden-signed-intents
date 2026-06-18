@@ -121,6 +121,14 @@ pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAu
 /// On success the transaction is committed to the chain (pending tx + prove_next_block) so
 /// subsequent storage reads via `read_last_nonce` / `read_last_authorized` reflect the new state.
 ///
+/// # Data flow and why no `public_key_hex` argument is needed
+/// The signer's public key is used exactly once — at account creation (`deploy_authorizer`) —
+/// to set the owner commitment in storage slot 0. Individual intents are relayed with only their
+/// signature: `Signature::to_prepared_signature(msg)` already embeds the recovered public key in
+/// the advice inputs, and the on-chain MASM verifies the signature against that stored commitment.
+/// The account therefore binds every signature to the committed key on-chain; a relayer cannot
+/// substitute a different key without the commitment check aborting the transaction.
+///
 /// # Error mapping
 /// Both a panic from `to_prepared_signature` (ECDSA recovery failure on a tampered intent)
 /// and a VM execution error are mapped to `RelayError::Rejected`.
@@ -129,7 +137,6 @@ pub fn relay_intent(
     deployed: &DeployedAuthorizer,
     intent: &Intent,
     signature_hex: &str,
-    _public_key_hex: &str,
 ) -> Result<(), RelayError> {
     // Decode the hex-encoded serialised `Signature` bytes and deserialise.
     let sig_bytes = hex::decode(signature_hex)

@@ -26,12 +26,12 @@ fn valid_intent_is_authorized_and_recorded() {
     let msg = intent.message_word();
     let signature = key.sign(msg);
     let sig_hex = hex::encode(signature.to_bytes());
-    let pk_hex = hex::encode(key.public_key().to_bytes());
+    let _pk_hex = hex::encode(key.public_key().to_bytes());
 
     // Relayer deploys + submits.
     let mut chain = new_chain();
     let deployed = deploy_authorizer(&mut chain, &key.public_key());
-    relay_intent(&mut chain, &deployed, &intent, &sig_hex, &pk_hex)
+    relay_intent(&mut chain, &deployed, &intent, &sig_hex)
         .expect("valid intent must settle");
 
     // Storage advanced: nonce must be 1.
