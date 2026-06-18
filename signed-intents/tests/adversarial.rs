@@ -53,11 +53,15 @@ fn relayer_cannot_tamper_with_the_amount() {
     tampered.amount = 9_999_999;
 
     let r = relay_intent(&mut chain, &dep, &tampered, &sig_hex);
-    assert!(
-        matches!(r, Err(RelayError::Rejected(_))),
-        "tampered amount must be rejected; got: {:?}",
-        r
-    );
+    match r {
+        Err(RelayError::Rejected(ref msg)) => {
+            // The tamper is caught at the on-chain commitment check (recovered pubkey
+            // differs from the stored commitment) OR via a caught ECDSA-recovery panic.
+            // Either way the rejection message must be non-empty.
+            assert!(!msg.is_empty(), "tampered amount: rejection message must not be empty");
+        }
+        other => panic!("tampered amount must be rejected; got: {:?}", other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +86,15 @@ fn a_forged_signature_is_rejected() {
 
     // Submit the attacker's signature against the owner's account.
     let r = relay_intent(&mut chain, &dep, &i, &attacker_sig_hex);
-    assert!(
-        matches!(r, Err(RelayError::Rejected(_))),
-        "forged signature must be rejected; got: {:?}",
-        r
-    );
+    match r {
+        Err(RelayError::Rejected(ref msg)) => {
+            assert!(
+                msg.contains("invalid public key commitment"),
+                "forged signature: unexpected rejection reason: {msg}"
+            );
+        }
+        other => panic!("forged signature must be rejected; got: {:?}", other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +117,15 @@ fn a_replayed_nonce_is_rejected() {
 
     // Replay the same nonce.
     let r = relay_intent(&mut chain, &dep, &first, &sig1);
-    assert!(
-        matches!(r, Err(RelayError::Rejected(_))),
-        "replayed nonce must be rejected; got: {:?}",
-        r
-    );
+    match r {
+        Err(RelayError::Rejected(ref msg)) => {
+            assert!(
+                msg.contains("intent nonce must exceed the stored last_nonce"),
+                "replayed nonce: unexpected rejection reason: {msg}"
+            );
+        }
+        other => panic!("replayed nonce must be rejected; got: {:?}", other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,9 +149,14 @@ fn an_expired_intent_is_rejected() {
     advance_blocks(&mut chain, 5);
 
     let r = relay_intent(&mut chain, &dep, &i, &sig);
-    assert!(
-        matches!(r, Err(RelayError::Rejected(_))),
-        "expired intent must be rejected; got: {:?}",
-        r
-    );
+    match r {
+        Err(RelayError::Rejected(ref msg)) => {
+            assert!(
+                msg.contains("intent has expired"),
+                "expired intent: unexpected rejection reason: {msg}"
+            );
+        }
+        other => panic!("expired intent must be rejected; got: {:?}", other),
+    }
 }
+

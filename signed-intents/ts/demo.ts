@@ -1,3 +1,8 @@
+// wasmFetch MUST be the first import: it installs the file:// fetch polyfill
+// as a side effect, which must be in place before the SDK's eager entry point
+// fires its top-level `await getWasmOrThrow()` at module-evaluation time.
+import "./wasmFetch.js";
+
 import { AuthSecretKey } from "@miden-sdk/miden-sdk";
 import { signIntent, type IntentInput } from "./signIntent.js";
 

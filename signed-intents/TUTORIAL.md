@@ -31,7 +31,7 @@ transaction unprovable, full stop.
   [Counter recipe](https://0xpolygonmiden.github.io/miden-docs/developer-documentation/miden-client/cookbook/counter-account.html)
   and the account-component recipe before continuing.
 - Basic MASM: the stack machine model, `call`/`exec`, and advice inputs.
-- Rust (stable, 2024 edition) with `miden-protocol 0.14`, `miden-client 0.14`, and
+- Rust (stable, 2021 edition) with `miden-protocol 0.14`, `miden-client 0.14`, and
   `miden-testing 0.14` in your `Cargo.toml`.
 - Node.js with `@miden-sdk/miden-sdk 0.14` for the TypeScript signer.
 - This example targets **miden-assembly 0.22.4** and **miden-core-lib 0.22.4**.
@@ -524,9 +524,9 @@ fn relayer_cannot_tamper_with_the_amount() {
 
 When the relayer inflates `amount` from 1000 to 9,999,999, the on-chain Poseidon2
 reconstruction hashes the tampered felts into a *different* MSG. The signature was created
-over the original MSG; ECDSA recovery on the tampered MSG yields a completely different
-recovered pubkey. That recovered pubkey does not match the owner commitment in storage, so
-`ecdsa_k256_keccak::verify` aborts the transaction. The proof is impossible to generate.
+over the original MSG; ECDSA recovery on the tampered MSG either panics (caught and mapped to
+`Rejected`) or recovers a pubkey that does not match the owner commitment in storage, causing
+the on-chain commitment guard to abort the transaction. The proof is impossible to generate.
 
 ### Attack 2 — Forged signature
 

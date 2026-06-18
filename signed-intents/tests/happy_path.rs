@@ -2,7 +2,7 @@
 //! intent, and assert the on-chain storage was updated correctly.
 
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::utils::serde::Serializable;
+use miden_protocol::utils::serde::Serializable as _;
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{deploy_authorizer, new_chain, read_last_authorized, read_last_nonce, relay_intent};
 
@@ -26,7 +26,6 @@ fn valid_intent_is_authorized_and_recorded() {
     let msg = intent.message_word();
     let signature = key.sign(msg);
     let sig_hex = hex::encode(signature.to_bytes());
-    let _pk_hex = hex::encode(key.public_key().to_bytes());
 
     // Relayer deploys + submits.
     let mut chain = new_chain();
