@@ -1,0 +1,48 @@
+# FEASIBILITY SPIKE — Plan 2. Not production.
+#
+# Q1: prove an account can hold a per-depositor StorageMap and a MASM proc can READ a
+# value by key and expose it (here: copy it into a plain value slot the Rust test reads back).
+#
+# VERIFIED ABI (installed 0.14 tree: miden-protocol 0.14.5, miden-core-lib 0.22.4):
+#   miden::protocol::active_account::get_map_item
+#       [slot_id_prefix, slot_id_suffix, KEY, ...] -> [VALUE, ...]
+#       (confirmed against miden-standards singlesig_acl.masm and the mock_account_code).
+#       NOTE: KEY is the RAW map key. The kernel internally hashes it
+#       (Rust side: StorageMapKey::hash = Hasher::hash_elements(key)), so Rust must seed the
+#       map with `StorageMapKey::new(raw_word)` and MASM passes the same RAW word.
+#   miden::protocol::native_account::set_item
+#       [slot_id_prefix, slot_id_suffix, VALUE] -> [OLD_VALUE]
+#
+# Slot-name addressing: a named slot is addressed by the first two felts of word(name).
+# `word("...")[0..2]` pushes [prefix, suffix] (prefix on top) — matches operator.masm usage.
+
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::core::sys
+
+const KEYS_MAP_SLOT = word("signed_intents::spike::depositor_keys")
+const READBACK_SLOT = word("signed_intents::spike::readback")
+
+#! Reads the pubkey commitment for `user_id` from the StorageMap and copies it into the
+#! plain `readback` value slot so the Rust test can assert it equals the seeded commitment.
+#!
+#! Inputs:  [user_pre, user_suf, 0, 0, pad(12)]   (the raw 2-felt user id padded to a Word)
+#! Outputs: [pad(16)]
+#!
+#! Invocation: call
+pub proc read_depositor_key
+    # Stack in: [user_pre, user_suf, 0, 0, pad(12)]. The top word IS the raw map KEY.
+    # get_map_item wants [slot_prefix, slot_suffix, KEY, ...]; push the slot id above KEY.
+    push.KEYS_MAP_SLOT[0..2]
+    # => [slot_prefix, slot_suffix, user_pre, user_suf, 0, 0, pad(12)]
+    exec.active_account::get_map_item
+    # => [VALUE(4), pad(12)]   VALUE = the seeded pubkey commitment
+
+    # Write VALUE into the plain readback slot so Rust can read it back from committed storage.
+    push.READBACK_SLOT[0..2] exec.native_account::set_item
+    # => [OLD_VALUE(4), pad(12)]
+    dropw
+
+    exec.sys::truncate_stack
+    # => [pad(16)]
+end
