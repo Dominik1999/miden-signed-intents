@@ -18,10 +18,11 @@ use std::panic;
 
 use miden_client::assembly::CodeBuilder;
 use miden_protocol::Felt;
-use miden_protocol::account::auth::{PublicKey, Signature};
+use miden_protocol::account::auth::Signature;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{
-    AccountBuilder, AccountComponent, AccountId, AccountStorageMode, StorageSlot, StorageSlotName,
+    AccountBuilder, AccountComponent, AccountId, AccountStorageMode, StorageMap, StorageMapKey,
+    StorageSlot, StorageSlotName,
 };
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::AdviceInputs;
@@ -32,7 +33,7 @@ use crate::intent::Intent;
 
 const OPERATOR_MASM: &str = include_str!("../masm/operator.masm");
 
-const OPERATOR_KEY_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
+const DEPOSITOR_KEYS_SLOT: &str = "signed_intents::operator::depositor_keys";
 const LAST_NONCE_SLOT: &str = "signed_intents::operator::last_nonce";
 const LAST_AUTH_SLOT: &str = "signed_intents::operator::last_authorized";
 
@@ -70,22 +71,28 @@ pub fn new_chain() -> MockChain {
 /// the chain from scratch with the operator account included. Any previous state in `chain`
 /// is replaced.
 ///
-/// Slot 0 = `owner.to_commitment()`; slots 1 and 2 are zeroed (last_nonce, last_authorized).
-pub fn deploy_operator(chain: &mut MockChain, owner: &PublicKey) -> DeployedOperator {
+/// Slot 0 = `StorageMap` keyed by `user_id_word` → pubkey commitment (one entry per depositor).
+/// Slots 1 and 2 are zeroed value slots (last_nonce, last_authorized).
+///
+/// `depositors` is a slice of `(user_id_word, pubkey_commitment)` pairs — one per depositor.
+pub fn deploy_operator(chain: &mut MockChain, depositors: &[(Word, Word)]) -> DeployedOperator {
     let library = CodeBuilder::default()
         .compile_component_code("signed_intents::operator", OPERATOR_MASM)
         .expect("operator.masm must assemble");
 
-    let owner_slot = StorageSlotName::new(OPERATOR_KEY_SLOT).expect("slot name must parse");
+    let keys_slot = StorageSlotName::new(DEPOSITOR_KEYS_SLOT).expect("slot name must parse");
     let nonce_slot = StorageSlotName::new(LAST_NONCE_SLOT).expect("slot name must parse");
     let auth_slot = StorageSlotName::new(LAST_AUTH_SLOT).expect("slot name must parse");
 
-    let pk_comm_word: Word = owner.to_commitment().into();
+    let map = StorageMap::with_entries(
+        depositors.iter().map(|(uid, comm)| (StorageMapKey::new(*uid), *comm)),
+    )
+    .expect("depositor map must build");
 
     let component = AccountComponent::new(
         library,
         vec![
-            StorageSlot::with_value(owner_slot, pk_comm_word),
+            StorageSlot::with_map(keys_slot, map),
             StorageSlot::with_value(nonce_slot, Word::from([0u32, 0, 0, 0])),
             StorageSlot::with_value(auth_slot, Word::from([0u32, 0, 0, 0])),
         ],
@@ -114,6 +121,16 @@ pub fn deploy_operator(chain: &mut MockChain, owner: &PublicKey) -> DeployedOper
     *chain = builder.build().expect("chain must build with operator account");
 
     DeployedOperator { account_id }
+}
+
+/// Read a depositor's pubkey commitment from the operator account's `StorageMap` slot.
+///
+/// Looks up `user_id` (raw `[id_prefix, id_suffix, 0, 0]` word) in the `DEPOSITOR_KEYS_SLOT`
+/// map of the committed operator account. Returns the seeded pubkey commitment word.
+pub fn read_depositor_commitment(chain: &MockChain, d: &DeployedOperator, user_id: Word) -> Word {
+    let slot = StorageSlotName::new(DEPOSITOR_KEYS_SLOT).expect("slot name must parse");
+    let account = chain.committed_account(d.account_id).expect("operator account must be committed");
+    account.storage().get_map_item(&slot, user_id).expect("depositor map item must exist")
 }
 
 /// Build and execute the transaction that calls `execute_intent` on the operator account.
