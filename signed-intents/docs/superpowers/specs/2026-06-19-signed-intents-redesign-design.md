@@ -205,6 +205,14 @@ Deposit-time *cryptographic* registration (operator verifies an ECDSA signature 
 tx, or binds the key into the deposit note) is recorded here as a **possible later extension**, explicitly
 out of scope for the first version per the team's steer that the main showcase is intent verification.
 
+### Plan 3 must-fix carried from the Plan 2 review
+- **Per-depositor nonce.** Plan 2 ships a SINGLE global `last_nonce` slot on the operator. It is
+  safety-preserving (per-key authorization via the map is unaffected; replay protection is monotonic
+  across all depositors) but introduces a cross-depositor **liveness/griefing DoS**: a depositor submitting
+  an intent with `nonce = u32::MAX` permanently locks out all others. Plan 3 MUST move the nonce into
+  per-depositor state (e.g. packed alongside the commitment in the depositor map, or a second map keyed by
+  `user_id`) and re-bound it to `u64`. Tracked from the Plan 2 final review.
+
 ## 12. Out of scope (YAGNI)
 
 - Real browser/WebClient wallet UI (the SDK signer is the canonical example; a browser mapping may be a

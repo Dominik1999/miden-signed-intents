@@ -71,6 +71,13 @@ use miden::protocol::tx
 
 # Named storage slots. The first two felts of the hashed name address the slot.
 const DEPOSITOR_KEYS_SLOT = word("signed_intents::operator::depositor_keys")
+# KNOWN PLAN-2 LIMITATION: last_nonce is a SINGLE GLOBAL slot, NOT per-depositor.
+# The replay guard is monotonic across ALL depositors, so it never weakens replay
+# protection or fund safety (authorization is per-key via the map). But it is a
+# cross-depositor LIVENESS/griefing vector: one depositor submitting an intent with
+# nonce = u32::MAX permanently locks out every other depositor (no larger u32 nonce
+# exists). Plan 3 must move the nonce into per-depositor state (e.g. alongside the
+# commitment in the map) and re-bound it to u64. See the design spec follow-on section.
 const LAST_NONCE_SLOT = word("signed_intents::operator::last_nonce")
 const LAST_AUTH_SLOT  = word("signed_intents::operator::last_authorized")
 
