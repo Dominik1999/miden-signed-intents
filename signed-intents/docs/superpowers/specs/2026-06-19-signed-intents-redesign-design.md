@@ -1,7 +1,7 @@
 # Signed Intents on Miden — Redesign Design Spec
 
-**Date:** 2026-06-19
-**Status:** Approved (design); implementation pending spike (see §10)
+**Date:** 2026-06-19 (rev. 2026-06-21: two-account operator-custody model)
+**Status:** Approved (design); implementation pending spike (see §11)
 **Tracking issue:** [0xMiden/docs#314](https://github.com/0xMiden/docs/issues/314) — *Example and Tutorial for end-to-end signature flow, for intent-based applications.*
 
 ---
@@ -17,173 +17,195 @@ The root cause is architectural, not cosmetic:
 
 - The ECDSA (`ecdsa_k256_keccak`) keypair in the TypeScript example is **standalone** — not connected
   to any Miden account.
-- The MASM verifier reads a public-key commitment from a **custom storage slot** that the deployer set
-  at deploy time; the key is **not** the account's authentication key and has **no authority** over the
-  account.
+- The MASM verifier reads a public-key commitment from a **custom storage slot** the deployer hardcoded
+  at deploy time; the key is **not** associated with any account owner and authorizes nothing.
 - The account uses `Auth::IncrNonce` — a **mock** auth component — so all "authorization" is bolted on
   beside the real (absent) auth boundary.
-
-Net effect: the example cannot serve as a reference for *intent-based authorization of Miden accounts*,
-because the key authorizes nothing about the account and is not part of the account's identity.
 
 Secondary problems: TypeScript test/build fragility, no end-to-end test linking the TS signer to MASM
 verification, and tutorial prose that is convoluted and reads as LLM-generated.
 
-## 2. Requirements (from issue #314 + the team thread)
+## 2. Requirements (issue #314 + team thread)
 
 The deliverable must demonstrate, executably and without protocol-level hand-holding:
 
 1. Canonical message construction, **explicit** serialization, hashing, and the exact intermediate values.
 2. Signature generation in the **frontend/wallet** and verification in both the **Rust client** and
    **inside the VM (MASM)**.
-3. **A way to verify that a public key really belongs to a specific Miden account ID** — verified in
-   **both Rust and MASM** (server-side check *before* execution so a doomed transaction is never submitted).
-   *(mico, issue thread.)*
-4. Handling invalid signatures; using a successful verification to **authorize a real action**.
+3. **A way to verify that a public key really belongs to a specific Miden account** — verified in both
+   Rust and MASM, *before* execution so a doomed transaction is never submitted. *(mico, issue thread.)*
+   See §5 for how this is actually achievable on Miden.
+4. Handling invalid signatures; using a successful verification to **authorize a real action** (move funds).
 5. Security discussion: what is signed, replay risk, message uniqueness, recommended patterns, common mistakes.
 
-### Canonical flow (yellowBirdy's 9 steps, adapted)
+## 3. The model: operator custody with key registered at deposit
 
-`build intent → serialize → Poseidon2 hash → sign in TS "wallet" → transport {intent, sig, pubkey, accountId}
-→ server verifies off-chain (signature + pubkey↔accountId) → relayer submits tx → account's native ECDSA
-auth verifies in-VM → emits P2ID note → nonce/expiry guards reject replays and expired intents.`
+The realistic, Miden-correct shape of "user signs an intent, an operator executes it" is **two accounts
+and a deposit**:
 
-## 3. Decisions locked during brainstorming
+- **User Account** — its **native authentication is the `ecdsa_k256_keccak` key**. One key controls the
+  account *and* signs intents.
+- **Operator Account** — custodies deposited funds, and in its storage tracks, per depositor:
+  the registered ECDSA pubkey, the balance, and the last-used nonce. Its MASM is the intent verifier.
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Frontend/wallet signing | **SDK signer framed as wallet** — `AuthSecretKey(EcdsaK256Keccak).sign()` in a TS/node script | The exact primitive a wallet calls internally; fully executable today, deterministic, no browser/wasm rabbit hole. Satisfies "executable with minimal modification." |
-| Authorized action | **Emit a P2ID payment note** paying `amount` of `faucet_id` to `recipient` | Canonical Miden "do something" = create an output note. Moves real value; bounded surface (no full swap engine). |
-| Key↔account architecture | **Approach 2 — native auth.** The ECDSA key is the account's auth key; the signature check *is* the account's authorization boundary | Strongest answer to the critique; makes the pubkey part of the account ID (see §5). Accepted with a feasibility spike (§10). |
-| Relayer/server | **Kept.** Untrusted relayer submits on the owner's behalf | This is the entire point of the intent pattern; matches the 9-step flow. |
+### Why a deposit, and why the key is registered there (the crux)
+
+A Miden `AccountID` **does not expose the account's auth pubkey**, and an account is not obligated to
+reveal it. Therefore an operator **cannot**, given only a user's account ID, look up or derive the user's
+pubkey, nor cryptographically check "does this supplied pubkey belong to that account ID?" at intent time.
+
+The binding must instead be **captured at a moment the protocol authenticates** — the deposit:
+
+> When the User Account performs the deposit transaction, that transaction is authorized by the User
+> Account's **native ECDSA auth**. Registering the pubkey as part of that authenticated action means the
+> operator records a key that **provably controls the user account** — because only that key could have
+> authorized the deposit. The binding is established once, at registration, by native auth — not
+> re-derived later from the account ID (which is impossible).
+
+This is the precise, honest answer to mico's requirement: *"belongs to the account"* is enforced at
+deposit by native auth, **not** as a per-intent account-ID lookup. It is exactly how a custodial operator
+or a payment-channel deposit works, and it is the distinction from the rejected original (a key hardcoded
+at deploy, tied to no owner): here the key is registered **per-user, at runtime, via an authenticated
+action, against real deposited funds**.
 
 ## 4. Canonical message format & serialization
 
-Intent fields, **fixed order** (this ordering is normative and mirrored byte-for-byte in Rust and TS):
+Intent fields, **fixed order** (normative; mirrored byte-for-byte in Rust and TS):
 
 ```
 index  field                type    notes
 0      DOMAIN_TRANSFER      felt    domain separation tag (constant)
-1      account_id_prefix    felt    user's (payer) Miden account ID, high word
-2      account_id_suffix    felt    user's (payer) Miden account ID, low word
-3      recipient_prefix     felt    payee Miden account ID, high word
-4      recipient_suffix     felt    payee Miden account ID, low word
+1      user_id_prefix       felt    depositor's User Account ID, high word
+2      user_id_suffix       felt    depositor's User Account ID, low word
+3      recipient_prefix     felt    payout recipient account ID, high word
+4      recipient_suffix     felt    payout recipient account ID, low word
 5      faucet_id            felt    asset faucet ID
-6      amount               felt    asset amount
-7      nonce                felt    strictly increasing per account
+6      amount               felt    asset amount to move out of the deposit
+7      nonce                felt    strictly increasing per depositor
 8      expiry               felt    block height; intent invalid at/after this block
 ```
 
-The payee is a Miden account ID (2 felts). The actual P2ID **RECIPIENT digest** (serial number, note
-script root, note inputs) is derived inside the contract from these felts during implementation; the
-signed object is this 9-felt vector.
-
 - **Encoding:** Miden field elements (`Felt`, u64 in the Goldilocks field). No floats, no variable-length encoding.
-- **Byte/array handling:** fixed-length array of 9 felts; no dynamic arrays at the serialization boundary.
-- **`account_id` is a signed field** (indices 1–2): the signature is therefore only valid for one specific
-  account, giving domain separation on top of the structural account-ID binding in §5.
-- **Serialization boundary:** the 9-felt vector is the canonical signable object. Transport adds
-  `{ signatureHex, publicKeyHex, accountId }` around it but those are *not* re-hashed.
+- **Array handling:** fixed-length array of 9 felts; no dynamic arrays at the serialization boundary.
+- **`user_id` is a signed field** (indices 1–2): the intent is bound to one depositor, and the operator can
+  index its per-depositor storage by it. The recipient (3–4) is a Miden account ID; the actual P2ID
+  RECIPIENT digest is derived inside the contract from these felts.
+- **Serialization boundary:** the 9-felt vector is the canonical signable object. Transport wraps it as
+  `{ intent, signatureHex, publicKeyHex, userAccountId }`; those wrapper fields are **not** re-hashed.
 
 A **golden vector** (the exact 9 felts and the resulting digest hex) is published and asserted by tests on
 both sides, so cross-language agreement is proven, not assumed.
 
-## 5. Public-key ↔ account-ID binding (the crux)
+## 5. Where the operator's knowledge of the pubkey comes from
 
-A Miden account's **ID is derived from its initial code + storage commitments** at creation. When the ECDSA
-key is the account's **native auth key**, the pubkey commitment lives in the auth component's storage slot,
-so it is cryptographically committed **into the account ID itself**. "Does this pubkey belong to this
-account ID?" becomes a structural fact rather than a lookup.
+- **It is NOT** read from the user's account ID (impossible — §3).
+- **It IS** the value registered in the Operator Account's storage at deposit, keyed by `user_id`.
+- The user-supplied `publicKeyHex` in transport is at most a convenience; correctness comes from comparing
+  against the **registered** key. The operator authorizes movement of funds based on signatures by the key
+  it recorded at deposit.
 
-- **In MASM:** the auth procedure verifies the signature against the account's **own** auth-key slot
-  (`active_account::get_item`), never a hardcoded constant. The kernel authenticates that slot against the
-  account's on-chain commitment, so a passing verification *proves* the signer holds the key bound to **this**
-  account ID.
-- **In Rust (server, before submission):** fetch the account state by ID, read its auth-key commitment,
-  assert it equals `pubkey.to_commitment()`, and verify the ECDSA signature locally over the digest. Only
-  then relay. This prevents submitting a transaction that would abort in the VM.
+Because the registered key is the User Account's native auth key (§3), "the operator moves the user's
+funds on a signed intent" is equivalent to "the account owner authorized moving their funds."
 
-This directly fixes the original defect (key in a side slot beside a mock auth, with no authority over the
-account and not part of its identity).
+## 6. End-to-end flow
 
-## 6. Component design
+**Phase A — Deposit (on-chain, authenticated by the user's ECDSA key)**
+1. User Account runs a tx, authorized by its **native ECDSA auth**, that (a) transfers funds to the
+   Operator Account and (b) registers its ECDSA pubkey + opens a tracked balance in operator storage,
+   keyed by `user_id`.
 
-### 6.1 Account + native auth
-- Account built with a **custom ECDSA auth component**; the ECDSA key is the account's auth key.
-- **No `Auth::IncrNonce` mock.** The auth procedure increments the nonce itself.
-- Pubkey commitment stored in the auth slot ⇒ bound into the account ID (§5).
+**Phase B — Intent (off-chain, just a signature)**
+2. User builds the 9-felt intent (§4), hashes it `MSG = Poseidon2::hash(intent)`, and **signs `MSG`** with
+   the same ECDSA key. Sends `{ intent, signature, publicKey, userAccountId }` to the operator.
 
-### 6.2 MASM auth procedure (`authorizer.masm`)
-1. Reconstruct `MSG = Poseidon2::hash(intent_felts)` (rewritten in the clearer style — see §9).
-2. Verify the intent signature against the account's **own** auth-key slot (`ecdsa_k256_keccak::verify`).
-3. Replay guard: `nonce > last_nonce`. Expiry guard: `current_block < expiry`.
-4. Emit the P2ID note **derived from the verified felts** (`recipient`, `faucet_id`, `amount`) — the relayer
-   cannot alter recipient/amount because changing any signed felt fails ECDSA verification.
-5. Increment the account nonce; persist `last_nonce`.
+**Phase C — Off-chain pre-check (operator, Rust) — fail fast before gas**
+3. Operator verifies the signature over `MSG` against the **registered** pubkey for `user_id`, and
+   sanity-checks the intent (nonce > stored, not expired, amount ≤ balance). Reject without submitting on
+   any failure.
 
-### 6.3 TypeScript "wallet" signer (`ts/signIntent.ts`)
-- Build the 8-felt intent; hash with Poseidon2; `AuthSecretKey(EcdsaK256Keccak).sign(digest)`.
-- Output `{ signatureHex, publicKeyHex, accountId }`.
-- Framed in prose as "this is what your wallet does on sign."
+**Phase D — Settlement (on-chain, in the Operator Account's MASM)**
+4. Operator submits a tx **on its own account** pushing the 9 intent felts and injecting the signature into
+   advice. The Operator Account's code: rebuilds `MSG`; loads the **registered** pubkey for `user_id` from
+   its own storage; `ecdsa_k256_keccak::verify`; enforces `nonce > last_nonce` and `block < expiry`;
+   **debits the tracked balance**; emits the payout P2ID note (derived from the verified felts); writes back
+   `last_nonce`.
 
-### 6.4 Rust server / relayer (`src/relayer.rs`)
-- **Off-chain verification first:** verify signature over the digest under `pubkey`; assert
-  `account.auth_key_commitment == pubkey.to_commitment()`. Reject before submission on any failure.
-- Then assemble the transaction (push intent felts, inject recovered signature into advice) and relay it
-  against MockChain.
+## 7. Who signs / verifies what (final)
 
-## 7. Error handling / adversarial behavior
+- **User signs:** the deposit tx (native ECDSA auth) **and** each off-chain intent — same key both times.
+- **Operator verifies (Rust, off-chain):** the intent signature against the pubkey it holds from deposit —
+  to fail fast.
+- **Operator Account verifies (MASM, on-chain):** the same signature against the pubkey in **its own**
+  storage, then moves the funds. This is the authorization boundary; the relayer/operator is trusted with
+  nothing — altering any signed felt breaks verification.
 
-Each failure mode has a named error and a test (see §8):
-- Tampered amount/recipient/any signed felt → ECDSA verification fails → reject.
-- Forged signature (attacker key) → commitment mismatch → reject (off-chain) / verify fails (in-VM).
-- Replayed nonce → `nonce > last_nonce` guard fails.
-- Expired intent → `current_block < expiry` guard fails.
-- **Wrong account** → signature valid but for a different `account_id` → off-chain `pubkey↔accountId`
-  check fails; in-VM verification against the active account's own key fails.
+## 8. Components
 
-## 8. Testing
+| Component | File | Responsibility |
+|---|---|---|
+| User Account (ECDSA native auth) | `src/…` | Built with `Auth::BasicAuth { EcdsaK256Keccak }`; authorizes the deposit; owns the signing key. |
+| Operator Account + verifier MASM | `masm/operator.masm`, `src/…` | Per-depositor storage (pubkey, balance, nonce); deposit handler; intent verifier + payout. |
+| TS "wallet" signer | `ts/signIntent.ts` | Build 9-felt intent → Poseidon2 → `AuthSecretKey(EcdsaK256Keccak).sign()`; emit `{ signature, publicKey, userAccountId }`. |
+| Rust operator/relayer | `src/relayer.rs` | Off-chain pre-check (§6 Phase C); assemble + submit the settlement tx. |
+
+### MASM verifier (operator account), in the clearer style (§10)
+1. Rebuild `MSG = Poseidon2::hash(intent_felts)`.
+2. Load the registered pubkey for `user_id` from operator storage.
+3. `ecdsa_k256_keccak::verify` of `MSG` against that key.
+4. Replay guard `nonce > last_nonce`; expiry guard `block < expiry`.
+5. Debit tracked balance for `user_id` by `amount`; emit P2ID note derived from the verified felts.
+6. Persist `last_nonce`.
+
+## 9. Error handling / adversarial behavior
+
+Each failure mode gets a named error and a test (§10):
+- Tampered amount/recipient/any signed felt → ECDSA verify fails.
+- Forged signature (attacker key) → not equal to registered key → verify fails (and off-chain pre-check rejects).
+- Replayed nonce → `nonce > last_nonce` fails.
+- Expired intent → `block < expiry` fails.
+- **Wrong depositor** → intent signed by a key not registered for that `user_id` → verify fails.
+- **Over-withdrawal** → `amount > tracked balance` → debit underflow guard fails.
+
+## 10. Testing
 
 - **Golden vector tests** (Rust + TS): canonical felt ordering and Poseidon2 digest match byte-for-byte.
 - **NEW end-to-end test: TS → Rust → MASM.** A TS-signed intent is transported, off-chain-verified by the
-  Rust server, relayed, verified in-VM, and settles (P2ID note emitted, nonce advanced). This is the
-  currently-missing link.
-- **Adversarial suite:** tamper, forge, replay, expire, **wrong-account** (§7).
-- **Assembly test:** the auth component assembles on the pinned 0.14 toolchain.
+  Rust operator, settled on-chain (balance debited, payout note emitted, nonce advanced). The currently
+  missing link.
+- **Deposit/registration test:** a User Account with ECDSA native auth deposits and registers its key; the
+  operator storage reflects the binding.
+- **Adversarial suite:** tamper, forge, replay, expire, wrong-depositor, over-withdrawal (§9).
+- **Assembly test:** operator component assembles on the pinned 0.14 toolchain.
 
-## 9. Tutorial rewrite
+## 11. Implementation risk & spike-first plan
 
-Restructured around the §2 flow, in the clearer MASM style the team proposed:
-- named constant for the hashed-element count, `@locals(n)` with **documented** local slots,
-- no "stash the values as a challenge" framing,
-- digest extraction in a small named helper (`extract_digest_from_hashing_output`) rather than inline
-  `squeeze`/`movdn` gymnastics,
-- stack comments use lower-case field names, not capitalized non-words.
+Two things carry genuine 0.14 feasibility risk and **must be proven by a narrow spike before the tutorial
+commits to them**:
 
-Security section: what exactly is signed, replay risk, message uniqueness (nonce + expiry + account binding),
-recommended signing patterns, and common implementation mistakes.
+A. **Deposit-time registration binding.** Exactly *how* the operator gains trustworthy knowledge of the
+   key at deposit — does the Operator Account verify an ECDSA signature *during* the deposit-handling
+   transaction, or is the deposit note constructed so the key is bound into it (and stored on consumption)?
+   Both are plausible; the spike pins down which assembles and runs.
 
-## 10. Implementation risk & spike-first plan
+B. **User Account with native ECDSA auth performing the deposit** (`Auth::BasicAuth { EcdsaK256Keccak }`)
+   and the Operator Account reading per-depositor storage + emitting the payout note from verified felts.
 
-Approach 2 places the signature check in the account's **auth** procedure. Note creation generally cannot
-happen *inside* auth, so the realistic shape is: `execute_intent` (a regular account procedure) creates the
-note from the verified felts, **bound to** the auth procedure that verifies the signature and gates it. That
-binding-through-auth is the part with genuine feasibility risk on the 0.14 kernel.
+**The spike must show:** (a) the User Account (ECDSA native auth) can authorize a deposit; (b) the Operator
+Account can store/read the per-depositor pubkey; (c) it can verify an intent signature against that stored
+key and emit the payout note. **If a kernel restriction blocks any step, implementation stops and the exact
+limitation is surfaced with options — no silent downgrade.**
 
-**Therefore implementation step 1 is a narrow feasibility spike** proving a custom auth component can:
-(a) assemble on 0.14;
-(b) read the account's own key slot + the signature from advice and verify;
-(c) bind to / gate the note creation (intent ⇄ output note).
+### Documented fallback
+If deposit-time *cryptographic* registration (A) proves infeasible on 0.14, the fallback is **trusted
+registration**: the operator records `(user_id, pubkey)` from the authenticated deposit out-of-band and the
+tutorial states plainly that the binding rests on the deposit being authorized by the user. The on-chain
+intent verification (against the stored key) is unaffected. This limitation, if hit, is documented, not hidden.
 
-**If a kernel restriction blocks any of these, implementation stops and the exact limitation is surfaced,
-along with the Approach 1 fallback** (ECDSA key registered in the account; a single `execute_intent`
-procedure verifies the intent against the account's own key and emits the note; permissive base auth). No
-silent downgrade.
-
-## 11. Out of scope (YAGNI)
+## 12. Out of scope (YAGNI)
 
 - Real browser/WebClient wallet UI (the SDK signer is the canonical example; a browser mapping may be a
   short documented note only).
-- A full swap engine / two-asset exchange (the comment's literal USDC→ETH); the P2ID note is the bounded,
-  realistic action.
+- A full swap engine / two-asset exchange (the comment's literal USDC→ETH); the payout P2ID note is the
+  bounded, realistic action.
 - Defining a production intent standard; this establishes a reproducible reference, not a standard.
+- Withdrawal-back-to-user flows, partial-fill accounting beyond a single balance debit, multi-asset deposits.
