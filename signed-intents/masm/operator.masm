@@ -1,4 +1,4 @@
-# Authorizer account component (Task 5).
+# Operator account component.
 #
 # Verifies a user's ECDSA-K256-Keccak transfer intent ON-CHAIN, then records the
 # authorized payload to storage. NoAuth at the protocol level: `execute_intent`
@@ -7,8 +7,8 @@
 #
 # Exported proc: `execute_intent`, invoked from a transaction script via `call`.
 #
-#   Operand inputs : [DOMAIN_TRANSFER, recipient_prefix, recipient_suffix,
-#                     amount, nonce, expiry_block, pad(10)]   (call pads to 16)
+#   Operand inputs : [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry,
+#                     pad(8)]   (call pads to 16; the 8 intent felts fill one sponge rate)
 #   Advice inputs  : [PK[9], SIG[17], ...]   (pushed by the relayer)
 #   Operand output : [pad(16)]               (all inputs consumed)
 #
@@ -41,15 +41,19 @@
 #       (intent.rs) is hashed with Poseidon2, the protocol's canonical `Hasher`, so it is
 #       reconstructible here.
 #
-# MSG RECONSTRUCTION (the riskiest new piece):
-#   MSG = Poseidon2::hash_elements([DOMAIN, r_pre, r_suf, amount, nonce, expiry]) (6 elements).
+# MSG RECONSTRUCTION (the riskiest piece):
+#   MSG = Poseidon2::hash_elements([domain, user_pre, user_suf, r_pre, r_suf, amount, nonce,
+#                                   expiry]) (8 elements).
 #   `hash_elements` (miden-crypto algebraic_sponge, shared padding rule): zero the 12-element
-#   state, set capacity element 8 = (len % RATE_WIDTH) = (6 % 8) = 6, absorb the 6 felts into
-#   rate positions 0..5, zero-pad rate positions 6,7, apply ONE permutation, digest = state[0..4].
+#   state, set capacity element 8 = (len % RATE_WIDTH) = (8 % 8) = 0, absorb the 8 felts into
+#   rate positions 0..7 (a FULL rate block, no zero-padding of the rate), apply ONE permutation,
+#   digest = state[0..4]. Because len is an exact multiple of RATE_WIDTH and miden-crypto's
+#   sponge encodes the length in the capacity rather than appending a padding block, the full
+#   8-felt block needs exactly one `hperm` — no trailing empty-rate permutation.
 #   The AEAD `init_state` proc pins the stack->state mapping: the TOP word of the stack is
 #   rate[0..4] with its top element = state[0]. So pushing the message as
-#   [m0, m1, m2, m3,  m4, m5, 0, 0,  6, 0, 0, 0] (top -> down) gives state[i]=m_i for i<6,
-#   state[6]=state[7]=0, state[8]=6 — exactly the Rust padding. One `hperm`, take R0.
+#   [m0, m1, m2, m3,  m4, m5, m6, m7,  0, 0, 0, 0] (top -> down) gives state[i]=m_i for i<8,
+#   state[8]=cap=0 — exactly the Rust padding. One `hperm`, take R0.
 # ----------------------------------------------------------------------------------------------
 
 use miden::core::crypto::dsa::ecdsa_k256_keccak
@@ -59,77 +63,81 @@ use miden::protocol::native_account
 use miden::protocol::tx
 
 # Named storage slots. The first two felts of the hashed name address the slot.
-const OWNER_PK_SLOT  = word("signed_intents::authorizer::owner_pubkey_commitment")
-const LAST_NONCE_SLOT = word("signed_intents::authorizer::last_nonce")
-const LAST_AUTH_SLOT  = word("signed_intents::authorizer::last_authorized")
+const OWNER_PK_SLOT  = word("signed_intents::operator::owner_pubkey_commitment")
+const LAST_NONCE_SLOT = word("signed_intents::operator::last_nonce")
+const LAST_AUTH_SLOT  = word("signed_intents::operator::last_authorized")
 
 const DOMAIN_TRANSFER = 1
 
-# Sponge capacity initializer for a 6-element input: 6 % RATE_WIDTH(8) = 6.
-const HASH_CAP_6 = 6
+# Number of intent felts the sponge absorbs, and the capacity element that initializes the
+# permutation. The canonical signed intent is exactly 8 felts = one full sponge rate
+# (RATE_WIDTH = 8), so the capacity initializer is `len % RATE_WIDTH = 8 % 8 = 0`.
+const NUMBER_OF_HASHED_ELEMENTS = 8
+const NUMBER_OF_HASHED_ELEMENTS_CAP = 0
 
-const ERR_BAD_DOMAIN = "authorizer: intent domain tag must be DOMAIN_TRANSFER"
-const ERR_STALE_NONCE = "authorizer: intent nonce must exceed the stored last_nonce"
-const ERR_EXPIRED = "authorizer: intent has expired (block height >= expiry_block)"
+const ERR_BAD_DOMAIN = "operator: intent domain tag must be DOMAIN_TRANSFER"
+const ERR_STALE_NONCE = "operator: intent nonce must exceed the stored last_nonce"
+const ERR_EXPIRED = "operator: intent has expired (block height >= expiry_block)"
 
 #! Verifies a signed transfer intent on-chain and records it.
 #!
-#! Inputs:  [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad(10)]
+#! Inputs:  [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, pad(8)]
 #! Outputs: [pad(16)]
 #! Advice:  [PK[9], SIG[17], ...]
 #!
 #! Invocation: call
 @locals(8)
 pub proc execute_intent
-    # Stack in: [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad(10)].
-    # We work only on the top 6 inputs; the call padding underneath is left untouched
-    # (the transaction kernel manages it at the call boundary, as in the standard
-    # account-component procedures).
+    # Stack in: [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, pad(8)].
+    # We work only on the top 8 inputs (the full canonical intent); the call padding underneath
+    # is left untouched (the transaction kernel manages it at the call boundary, as in the
+    # standard account-component procedures).
+    #
+    # Stack index of each intent felt (top = index 0):
+    #   0:domain  1:user_pre  2:user_suf  3:r_pre  4:r_suf  5:amount  6:nonce  7:expiry
 
     # --- 0. Sanity: domain tag must be DOMAIN_TRANSFER. ---
     dup
     push.DOMAIN_TRANSFER assert_eq.err=ERR_BAD_DOMAIN
-    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
 
-    # Stash the values we still need AFTER hashing into local memory, so the hash can consume
-    # the 6 operand felts without us having to keep a stack duplicate (a stack duplicate would
-    # spill into the overflow table and break the strict depth-16 `call` return contract).
-    #   addr 0 : [r_pre, r_suf, amount, nonce]   (stored order; loc_loadw_le reverses to
-    #             [nonce, amount, r_suf, r_pre] at set_item — nonce=TOP; Rust Word:
-    #             word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce)
-    #   addr 4 : [nonce, expiry, 0, 0]           (carried scalars for the replay/expiry checks)
-    # Local word addresses must be word-aligned (multiples of 4).
-    dup.4 dup.4 dup.4 dup.4
-    # => [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
-    # Derivation: starting from [DOMAIN(0), r_pre(1), r_suf(2), amount(3), nonce(4), expiry(5)]:
-    #   dup.4 → nonce:  [nonce,   DOMAIN, r_pre, r_suf, amount, nonce, expiry]  (r_pre now at pos 2)
-    #   dup.4 → amount: [amount,  nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 3)
-    #   dup.4 → r_suf:  [r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry] (r_pre at pos 4)
-    #   dup.4 → r_pre:  [r_pre, r_suf, amount, nonce, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # Stash the values we still need AFTER hashing into local memory, so the hash can consume the
+    # 8 operand felts without us having to keep a stack duplicate (a stack duplicate would spill
+    # into the overflow table and break the strict depth-16 `call` return contract).
+    # Local word slots (each holds one 4-felt word; addresses are word-aligned, multiples of 4):
+    #   loc[0] : [r_pre, r_suf, amount, nonce]  — audit record for slot "last_authorized".
+    #            loc_loadw_le reverses it to [nonce, amount, r_suf, r_pre] at set_item time (nonce
+    #            = TOP); Rust Word: word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce.
+    #   loc[4] : physical stack [0, 0, expiry, nonce] (nonce deepest) — the scalars carried into
+    #            the replay-nonce and expiry checks.
+    dup.6 dup.6 dup.6 dup.6
+    # => [r_pre, r_suf, amount, nonce, domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
+    # Derivation from [domain(0), user_pre(1), user_suf(2), r_pre(3), r_suf(4), amount(5), nonce(6), expiry(7)]:
+    #   dup.6 → nonce  : [nonce,  domain, ... , nonce, expiry]      (amount now at index 6)
+    #   dup.6 → amount : [amount, nonce, domain, ... ]             (r_suf  now at index 6)
+    #   dup.6 → r_suf  : [r_suf, amount, nonce, domain, ... ]      (r_pre  now at index 6)
+    #   dup.6 → r_pre  : [r_pre, r_suf, amount, nonce, domain, ... ]
     loc_storew_le.0 dropw
-    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
-    dup.4 dup.6 push.0 push.0
-    # => [nonce, expiry, 0, 0, DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
+    dup.6 dup.8 push.0 push.0
+    # => [0, 0, expiry, nonce, domain, ...]   (dup.6 → nonce on top; dup.8 → expiry above it; then two pads)
     loc_storew_le.4 dropw
-    # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry]
+    # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
 
-    # --- 1. Rebuild MSG = Poseidon2::hash_elements([DOMAIN, r_pre, r_suf, amount, nonce, expiry]). ---
-    # Build the Poseidon2 sponge state, consuming the 6 operand felts.
-    # Target stack (top->down): [m0,m1,m2,m3, m4,m5,0,0, cap,0,0,0]  then `hperm`.
-    # The 6 operand felts are [DOMAIN(m0), r_pre(m1), r_suf(m2), amount(m3), nonce(m4), expiry(m5)].
-    push.0 push.0
-    # => [0, 0, m0,m1,m2,m3,m4,m5, pad...]
-    movdn.7 movdn.7
-    # => [m0,m1,m2,m3, m4,m5,0,0, pad...]
-    push.0 push.0 push.0 push.HASH_CAP_6
-    # => [cap,0,0,0, m0,m1,m2,m3, m4,m5,0,0, pad...]
+    # --- 1. Rebuild MSG = Poseidon2::hash_elements(intent_felts[0..8]). ---
+    # The 8 operand felts exactly fill the sponge rate (RATE_WIDTH = 8), so this is a SINGLE
+    # permutation. Build the 12-element sponge state (top -> down):
+    #   [m0,m1,m2,m3, m4,m5,m6,m7, cap,0,0,0]   where cap = NUMBER_OF_HASHED_ELEMENTS % 8 = 0.
+    # m0..m7 are the 8 intent felts already on top of the stack in canonical order.
+    push.0 push.0 push.0 push.NUMBER_OF_HASHED_ELEMENTS_CAP
+    # => [cap,0,0,0, m0,m1,m2,m3, m4,m5,m6,m7, ...]   (capacity word currently on top)
     # The capacity word must be the deepest of the 12-element state (positions 8..12).
     movdnw.2
-    # => [m0,m1,m2,m3, m4,m5,0,0, cap,0,0,0, pad...]
+    # => [m0,m1,m2,m3, m4,m5,m6,m7, cap,0,0,0, ...]
     hperm
-    # => [R0(4), R1(4), C(4), pad...]   digest = R0
-    exec.squeeze_rate0
-    # => [MSG(4), pad...]
+    # => [R0(4), R1(4), C(4), ...]   digest = R0
+    exec.extract_digest_from_hashing_output
+    # => [MSG(4), ...]
 
     # --- 2. Load committed pubkey from storage and verify the signature. ---
     push.OWNER_PK_SLOT[0..2] exec.active_account::get_item
@@ -214,13 +222,15 @@ pub proc execute_intent
     # => [pad(16)]
 end
 
-#! Returns the first rate word (digest) of a Poseidon2 sponge state and drops the rest.
+#! Extracts the 4-element digest (the rate-0 word) from a Poseidon2 sponge state and drops the
+#! two remaining state words. After a single `hperm` over a fully-absorbed input, this rate-0
+#! word IS the hash digest.
 #!
-#! Inputs:  [R0, R1, C, ...]
+#! Inputs:  [R0, R1, C, ...]   (R0 = rate[0..4] on top, R1 = rate[4..8], C = capacity)
 #! Outputs: [R0, ...]
 #!
 #! Invocation: exec
-proc squeeze_rate0
+proc extract_digest_from_hashing_output
     swapw.2 dropw dropw
     # => [R0, ...]
 end

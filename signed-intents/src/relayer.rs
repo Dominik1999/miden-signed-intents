@@ -30,11 +30,11 @@ use miden_testing::{Auth, MockChain};
 
 use crate::intent::Intent;
 
-const AUTHORIZER_MASM: &str = include_str!("../masm/authorizer.masm");
+const AUTHORIZER_MASM: &str = include_str!("../masm/operator.masm");
 
-const OWNER_PK_SLOT: &str = "signed_intents::authorizer::owner_pubkey_commitment";
-const LAST_NONCE_SLOT: &str = "signed_intents::authorizer::last_nonce";
-const LAST_AUTH_SLOT: &str = "signed_intents::authorizer::last_authorized";
+const OWNER_PK_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
+const LAST_NONCE_SLOT: &str = "signed_intents::operator::last_nonce";
+const LAST_AUTH_SLOT: &str = "signed_intents::operator::last_authorized";
 
 /// Handle returned by `deploy_authorizer`, consumed by the other relayer functions.
 pub struct DeployedAuthorizer {
@@ -73,8 +73,8 @@ pub fn new_chain() -> MockChain {
 /// Slot 0 = `owner.to_commitment()`; slots 1 and 2 are zeroed (last_nonce, last_authorized).
 pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAuthorizer {
     let library = CodeBuilder::default()
-        .compile_component_code("signed_intents::authorizer", AUTHORIZER_MASM)
-        .expect("authorizer.masm must assemble");
+        .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
+        .expect("operator.masm must assemble");
 
     let owner_slot = StorageSlotName::new(OWNER_PK_SLOT).expect("slot name must parse");
     let nonce_slot = StorageSlotName::new(LAST_NONCE_SLOT).expect("slot name must parse");
@@ -89,7 +89,7 @@ pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAu
             StorageSlot::with_value(nonce_slot, Word::from([0u32, 0, 0, 0])),
             StorageSlot::with_value(auth_slot, Word::from([0u32, 0, 0, 0])),
         ],
-        AccountComponentMetadata::mock("signed_intents::authorizer"),
+        AccountComponentMetadata::mock("signed_intents::operator"),
     )
     .expect("authorizer component must build");
 
@@ -166,13 +166,13 @@ pub fn relay_intent(
 
     // Assemble the tx script that calls `execute_intent` with the 6 canonical intent felts.
     let library = CodeBuilder::default()
-        .compile_component_code("signed_intents::authorizer", AUTHORIZER_MASM)
-        .expect("authorizer.masm must assemble");
+        .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
+        .expect("operator.masm must assemble");
 
     let felts = intent.canonical_felts();
     let tx_script_code = format!(
         r#"
-        use signed_intents::authorizer->authorizer
+        use signed_intents::operator->authorizer
         use miden::core::sys
 
         begin
