@@ -139,12 +139,13 @@ pub fn read_depositor_commitment(chain: &MockChain, d: &DeployedOperator, user_i
 /// subsequent storage reads via `read_last_nonce` / `read_last_authorized` reflect the new state.
 ///
 /// # Data flow and why no `public_key_hex` argument is needed
-/// The signer's public key is used exactly once — at account creation (`deploy_operator`) —
-/// to set the owner commitment in storage slot 0. Individual intents are relayed with only their
-/// signature: `Signature::to_prepared_signature(msg)` already embeds the recovered public key in
-/// the advice inputs, and the on-chain MASM verifies the signature against that stored commitment.
-/// The account therefore binds every signature to the committed key on-chain; a relayer cannot
-/// substitute a different key without the commitment check aborting the transaction.
+/// Each depositor's pubkey commitment is seeded in the operator's per-depositor StorageMap at
+/// deploy time (`deploy_operator`). Individual intents are relayed with only their signature:
+/// `Signature::to_prepared_signature(msg)` embeds the recovered public key in the advice inputs,
+/// and the on-chain MASM looks up the expected commitment from the map by the intent's
+/// `user_prefix`/`user_suffix`, then verifies the signature against it. A relayer cannot
+/// substitute a different key or spoof a different user without the per-depositor commitment
+/// check aborting the transaction.
 ///
 /// # Error mapping
 /// Both a panic from `to_prepared_signature` (ECDSA recovery failure on a tampered intent)
