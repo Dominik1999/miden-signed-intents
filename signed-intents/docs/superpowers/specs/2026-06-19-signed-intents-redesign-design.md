@@ -172,34 +172,34 @@ Each failure mode gets a named error and a test (§10):
 - **NEW end-to-end test: TS → Rust → MASM.** A TS-signed intent is transported, off-chain-verified by the
   Rust operator, settled on-chain (balance debited, payout note emitted, nonce advanced). The currently
   missing link.
-- **Deposit/registration test:** a User Account with ECDSA native auth deposits and registers its key; the
-  operator storage reflects the binding.
+- **Registration setup test:** operator storage holds the depositor's pubkey/balance/nonce (registration
+  modeled simply per §11); the verifier reads it correctly.
 - **Adversarial suite:** tamper, forge, replay, expire, wrong-depositor, over-withdrawal (§9).
 - **Assembly test:** operator component assembles on the pinned 0.14 toolchain.
 
-## 11. Implementation risk & spike-first plan
+## 11. Scope priority & implementation risk
 
-Two things carry genuine 0.14 feasibility risk and **must be proven by a narrow spike before the tutorial
-commits to them**:
+**The core showcase is Phase D: the Operator Account verifying a user-signed intent in MASM** — load the
+registered pubkey for `user_id` from operator storage, `ecdsa_k256_keccak::verify` the signed intent,
+enforce nonce/expiry, and emit the payout. This is the one thing that must work and is the heart of the
+tutorial. The implementation plan's **first step is a narrow spike that proves exactly this** on the pinned
+0.14 toolchain:
 
-A. **Deposit-time registration binding.** Exactly *how* the operator gains trustworthy knowledge of the
-   key at deposit — does the Operator Account verify an ECDSA signature *during* the deposit-handling
-   transaction, or is the deposit note constructed so the key is bound into it (and stored on consumption)?
-   Both are plausible; the spike pins down which assembles and runs.
+> (a) build an Operator Account whose storage holds a per-depositor pubkey; (b) read it in MASM; (c)
+> `ecdsa_k256_keccak::verify` a TS/Rust-produced intent signature against it; (d) emit the payout note from
+> the verified felts. **If a kernel restriction blocks any step, implementation stops and the exact
+> limitation is surfaced with options — no silent downgrade.**
 
-B. **User Account with native ECDSA auth performing the deposit** (`Auth::BasicAuth { EcdsaK256Keccak }`)
-   and the Operator Account reading per-depositor storage + emitting the payout note from verified felts.
+### Registration is modeled simply (not a cryptographic showcase)
+The pubkey reaches operator storage via the deposit, but the tutorial does **not** need to *cryptographically
+prove* the registration binding inside the VM. Default: **trusted registration** — the operator records
+`(user_id, pubkey)` from the user-authorized deposit, and the tutorial states plainly that the binding rests
+on the deposit having been authorized by the user's own ECDSA key (§3). The conceptual binding argument of §3
+still holds; we simply don't implement an in-VM registration proof.
 
-**The spike must show:** (a) the User Account (ECDSA native auth) can authorize a deposit; (b) the Operator
-Account can store/read the per-depositor pubkey; (c) it can verify an intent signature against that stored
-key and emit the payout note. **If a kernel restriction blocks any step, implementation stops and the exact
-limitation is surfaced with options — no silent downgrade.**
-
-### Documented fallback
-If deposit-time *cryptographic* registration (A) proves infeasible on 0.14, the fallback is **trusted
-registration**: the operator records `(user_id, pubkey)` from the authenticated deposit out-of-band and the
-tutorial states plainly that the binding rests on the deposit being authorized by the user. The on-chain
-intent verification (against the stored key) is unaffected. This limitation, if hit, is documented, not hidden.
+Deposit-time *cryptographic* registration (operator verifies an ECDSA signature during the deposit-handling
+tx, or binds the key into the deposit note) is recorded here as a **possible later extension**, explicitly
+out of scope for the first version per the team's steer that the main showcase is intent verification.
 
 ## 12. Out of scope (YAGNI)
 
