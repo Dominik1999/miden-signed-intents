@@ -212,9 +212,12 @@ fn a_replayed_signature_for_a_different_depositor_is_rejected() {
     let r = relay_intent(&mut chain, &dep, &for_b, &sig_hex);
     match r {
         Err(RelayError::Rejected(ref msg)) => {
-            // The map returns a zero/absent commitment for the unknown depositor B,
-            // so the commitment check or ECDSA verify aborts.
-            assert!(!msg.is_empty(), "wrong depositor: rejection message must not be empty");
+            // The map returns a zero/absent commitment for depositor B (not seeded),
+            // so the on-chain commitment guard aborts — same error as a forged signature.
+            assert!(
+                msg.contains("invalid public key commitment"),
+                "wrong depositor: unexpected rejection reason: {msg}"
+            );
         }
         other => panic!("wrong-depositor intent must be rejected; got: {:?}", other),
     }
