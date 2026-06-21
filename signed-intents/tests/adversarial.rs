@@ -8,7 +8,7 @@ use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::utils::serde::Serializable as _; // brings to_bytes() into scope
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{
-    advance_blocks, deploy_authorizer, new_chain, relay_intent, RelayError,
+    advance_blocks, deploy_operator, new_chain, relay_intent, RelayError,
 };
 
 fn key() -> AuthSecretKey {
@@ -17,6 +17,8 @@ fn key() -> AuthSecretKey {
 
 fn make_intent(nonce: u64, expiry: u64) -> Intent {
     Intent {
+        user_prefix: 0xAAAA,
+        user_suffix: 0xBBBB,
         recipient_prefix: 0x1234,
         recipient_suffix: 0x5678,
         amount: 1000,
@@ -46,7 +48,7 @@ fn relayer_cannot_tamper_with_the_amount() {
     let sig_hex = sign(&k, &signed);
 
     let mut chain = new_chain();
-    let dep = deploy_authorizer(&mut chain, &k.public_key());
+    let dep = deploy_operator(&mut chain, &k.public_key());
 
     // Relayer submits a DIFFERENT amount than was signed.
     let mut tampered = signed;
@@ -82,7 +84,7 @@ fn a_forged_signature_is_rejected() {
 
     let mut chain = new_chain();
     // Account is deployed with the OWNER's commitment in storage slot 0.
-    let dep = deploy_authorizer(&mut chain, &owner.public_key());
+    let dep = deploy_operator(&mut chain, &owner.public_key());
 
     // Submit the attacker's signature against the owner's account.
     let r = relay_intent(&mut chain, &dep, &i, &attacker_sig_hex);
@@ -107,7 +109,7 @@ fn a_forged_signature_is_rejected() {
 fn a_replayed_nonce_is_rejected() {
     let k = key();
     let mut chain = new_chain();
-    let dep = deploy_authorizer(&mut chain, &k.public_key());
+    let dep = deploy_operator(&mut chain, &k.public_key());
 
     let first = make_intent(1, 100_000);
     let sig1 = sign(&k, &first);
@@ -138,7 +140,7 @@ fn a_replayed_nonce_is_rejected() {
 fn an_expired_intent_is_rejected() {
     let k = key();
     let mut chain = new_chain();
-    let dep = deploy_authorizer(&mut chain, &k.public_key());
+    let dep = deploy_operator(&mut chain, &k.public_key());
 
     // After deploy the chain is at block 1 (genesis = 0, builder adds 1). Set expiry = 1
     // so that after advancing 5 more blocks the chain is well past expiry.

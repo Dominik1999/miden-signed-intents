@@ -1,7 +1,7 @@
-//! Deploys the authorizer account and relays signed intents against MockChain.
+//! Deploys the operator account and relays signed intents against MockChain.
 //!
 //! # Auth scheme
-//! The authorizer account uses `Auth::IncrNonce` (a mock auth component that simply increments
+//! The operator account uses `Auth::IncrNonce` (a mock auth component that simply increments
 //! the nonce). This gives each transaction a state delta so the kernel does not reject it as a
 //! no-op. Security is provided entirely by `execute_intent` itself — the ECDSA commitment check
 //! inside the MASM is the real authorization boundary. This matches the approach proven working
@@ -32,12 +32,12 @@ use crate::intent::Intent;
 
 const AUTHORIZER_MASM: &str = include_str!("../masm/operator.masm");
 
-const OWNER_PK_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
+const OPERATOR_KEY_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
 const LAST_NONCE_SLOT: &str = "signed_intents::operator::last_nonce";
 const LAST_AUTH_SLOT: &str = "signed_intents::operator::last_authorized";
 
-/// Handle returned by `deploy_authorizer`, consumed by the other relayer functions.
-pub struct DeployedAuthorizer {
+/// Handle returned by `deploy_operator`, consumed by the other relayer functions.
+pub struct DeployedOperator {
     pub account_id: AccountId,
 }
 
@@ -58,25 +58,25 @@ impl std::fmt::Display for RelayError {
 
 /// Create a fresh `MockChain` with a single genesis block.
 ///
-/// The returned chain is empty; call `deploy_authorizer` to populate it with the
-/// authorizer account before calling `relay_intent`.
+/// The returned chain is empty; call `deploy_operator` to populate it with the
+/// operator account before calling `relay_intent`.
 pub fn new_chain() -> MockChain {
     MockChain::new()
 }
 
-/// Build the authorizer account and register it in the genesis state of `chain`.
+/// Build the operator account and register it in the genesis state of `chain`.
 ///
 /// Because `MockChain` does not support adding accounts after genesis, this function rebuilds
-/// the chain from scratch with the authorizer account included. Any previous state in `chain`
+/// the chain from scratch with the operator account included. Any previous state in `chain`
 /// is replaced.
 ///
 /// Slot 0 = `owner.to_commitment()`; slots 1 and 2 are zeroed (last_nonce, last_authorized).
-pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAuthorizer {
+pub fn deploy_operator(chain: &mut MockChain, owner: &PublicKey) -> DeployedOperator {
     let library = CodeBuilder::default()
         .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
         .expect("operator.masm must assemble");
 
-    let owner_slot = StorageSlotName::new(OWNER_PK_SLOT).expect("slot name must parse");
+    let owner_slot = StorageSlotName::new(OPERATOR_KEY_SLOT).expect("slot name must parse");
     let nonce_slot = StorageSlotName::new(LAST_NONCE_SLOT).expect("slot name must parse");
     let auth_slot = StorageSlotName::new(LAST_AUTH_SLOT).expect("slot name must parse");
 
@@ -91,7 +91,7 @@ pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAu
         ],
         AccountComponentMetadata::mock("signed_intents::operator"),
     )
-    .expect("authorizer component must build");
+    .expect("operator component must build");
 
     // Build the account via MockChainBuilder using Auth::IncrNonce, which gives each
     // transaction a nonce delta so the kernel does not reject it as a no-op.
@@ -103,26 +103,26 @@ pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAu
             .with_auth_component(auth_component)
             .with_component(component)
             .build_existing()
-            .expect("authorizer account must build")
+            .expect("operator account must build")
     };
 
     let account_id = account.id();
 
-    // Rebuild the chain with the authorizer account in genesis state.
+    // Rebuild the chain with the operator account in genesis state.
     let mut builder = MockChain::builder();
     builder.add_account(account).expect("add account to builder must succeed");
-    *chain = builder.build().expect("chain must build with authorizer account");
+    *chain = builder.build().expect("chain must build with operator account");
 
-    DeployedAuthorizer { account_id }
+    DeployedOperator { account_id }
 }
 
-/// Build and execute the transaction that calls `execute_intent` on the authorizer account.
+/// Build and execute the transaction that calls `execute_intent` on the operator account.
 ///
 /// On success the transaction is committed to the chain (pending tx + prove_next_block) so
 /// subsequent storage reads via `read_last_nonce` / `read_last_authorized` reflect the new state.
 ///
 /// # Data flow and why no `public_key_hex` argument is needed
-/// The signer's public key is used exactly once — at account creation (`deploy_authorizer`) —
+/// The signer's public key is used exactly once — at account creation (`deploy_operator`) —
 /// to set the owner commitment in storage slot 0. Individual intents are relayed with only their
 /// signature: `Signature::to_prepared_signature(msg)` already embeds the recovered public key in
 /// the advice inputs, and the on-chain MASM verifies the signature against that stored commitment.
@@ -134,7 +134,7 @@ pub fn deploy_authorizer(chain: &mut MockChain, owner: &PublicKey) -> DeployedAu
 /// and a VM execution error are mapped to `RelayError::Rejected`.
 pub fn relay_intent(
     chain: &mut MockChain,
-    deployed: &DeployedAuthorizer,
+    deployed: &DeployedOperator,
     intent: &Intent,
     signature_hex: &str,
 ) -> Result<(), RelayError> {
@@ -164,7 +164,7 @@ pub fn relay_intent(
         })?
     };
 
-    // Assemble the tx script that calls `execute_intent` with the 6 canonical intent felts.
+    // Assemble the tx script that calls `execute_intent` with the 8 canonical intent felts.
     let library = CodeBuilder::default()
         .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
         .expect("operator.masm must assemble");
@@ -172,24 +172,26 @@ pub fn relay_intent(
     let felts = intent.canonical_felts();
     let tx_script_code = format!(
         r#"
-        use signed_intents::operator->authorizer
+        use signed_intents::operator->operator
         use miden::core::sys
 
         begin
-            push.{expiry}.{nonce}.{amount}.{r_suf}.{r_pre}.{domain}
-            # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad...]
-            call.authorizer::execute_intent
+            push.{expiry}.{nonce}.{amount}.{r_suf}.{r_pre}.{user_suf}.{user_pre}.{domain}
+            # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, pad...]
+            call.operator::execute_intent
             # The call leaves the script stack deeper than 16; truncate so the kernel's
             # depth-16 exit invariant holds.
             exec.sys::truncate_stack
         end
         "#,
         domain = felts[0],
-        r_pre = felts[1],
-        r_suf = felts[2],
-        amount = felts[3],
-        nonce = felts[4],
-        expiry = felts[5],
+        user_pre = felts[1],
+        user_suf = felts[2],
+        r_pre = felts[3],
+        r_suf = felts[4],
+        amount = felts[5],
+        nonce = felts[6],
+        expiry = felts[7],
     );
 
     let tx_script = CodeBuilder::default()
@@ -235,7 +237,7 @@ pub fn relay_intent(
 /// The MASM stores the nonce as the deepest element in the `[0, 0, 0, nonce]` stack word
 /// (three zeros pushed on top), which maps to `word[3]` in the Rust `Word` array (where
 /// `word[0]` = TOP of stack element = 0, `word[3]` = deepest = nonce).
-pub fn read_last_nonce(chain: &MockChain, d: &DeployedAuthorizer) -> u64 {
+pub fn read_last_nonce(chain: &MockChain, d: &DeployedOperator) -> u64 {
     let slot_name = StorageSlotName::new(LAST_NONCE_SLOT).expect("slot name must parse");
     let account = chain.committed_account(d.account_id).expect("account must be committed");
     let word = account.storage().get_item(&slot_name).expect("last_nonce slot must exist");
@@ -267,7 +269,7 @@ pub fn advance_blocks(chain: &mut MockChain, n: u32) {
 /// - `word[2]` = amount
 /// - `word[1]` = recipient_suffix
 /// - `word[0]` = recipient_prefix
-pub fn read_last_authorized(chain: &MockChain, d: &DeployedAuthorizer) -> Word {
+pub fn read_last_authorized(chain: &MockChain, d: &DeployedOperator) -> Word {
     let slot_name = StorageSlotName::new(LAST_AUTH_SLOT).expect("slot name must parse");
     let account = chain.committed_account(d.account_id).expect("account must be committed");
     account.storage().get_item(&slot_name).expect("last_authorized slot must exist")
