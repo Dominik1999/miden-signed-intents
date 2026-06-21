@@ -5,7 +5,9 @@
   "scripts": {
     "test": "vitest run",
     "demo": "tsx demo.ts",
-    "gen-fixture": "tsx gen-fixture.ts"
+    "gen-fixture": "tsx gen-fixture.ts",
+    "wt-export-key": "tsx wt-export-key.ts",
+    "wt-sign-intent": "tsx wt-sign-intent.ts"
   },
   "dependencies": {
     "@miden-sdk/miden-sdk": "0.14"

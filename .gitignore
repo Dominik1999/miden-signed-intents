@@ -13,3 +13,7 @@ node_modules/
 
 # Live-generated TS fixture from walkthrough_ts test (regenerated each run, not committed)
 signed-intents/tests/fixtures/walkthrough_live.json
+
+# Two-phase walkthrough temp files (regenerated each run, not committed)
+signed-intents/tests/fixtures/walkthrough_live_*.json
+signed-intents/target/wt-*.json

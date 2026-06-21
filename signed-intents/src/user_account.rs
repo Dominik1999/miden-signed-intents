@@ -76,6 +76,33 @@ pub fn account_from_pubkey_commitment(pkc: PublicKeyCommitment) -> Account {
         .expect("account_from_pubkey_commitment: account must build")
 }
 
+/// Build a depositor account deterministically from a `PublicKeyCommitment`.
+///
+/// The `AccountBuilder` seed is derived from the commitment bytes, so the same commitment always
+/// produces the same `AccountId`. This is required by the two-phase walkthrough flow where the
+/// account id must be known (and passed to the TS signer) before the intent is signed.
+///
+/// Unlike `account_from_pubkey_commitment` (which uses `rand::random` and produces a different
+/// account id on every call), this function is pure and side-effect-free: given the same
+/// `PublicKeyCommitment`, it always returns the same `Account` with the same `AccountId`.
+pub fn account_from_pubkey_commitment_seeded(pkc: PublicKeyCommitment) -> Account {
+    // Derive a deterministic 32-byte seed from the commitment word.
+    // The commitment is a `Word` ([Felt; 4]); we pack each felt's canonical u64 as
+    // little-endian bytes into the seed so the mapping is injective.
+    let comm_word: Word = pkc.into();
+    let mut seed = [0u8; 32];
+    for (i, felt) in comm_word.iter().enumerate() {
+        let bytes = felt.as_canonical_u64().to_le_bytes();
+        seed[i * 8..(i + 1) * 8].copy_from_slice(&bytes);
+    }
+    AccountBuilder::new(seed)
+        .storage_mode(AccountStorageMode::Public)
+        .with_auth_component(AuthSingleSig::new(pkc, AuthScheme::EcdsaK256Keccak))
+        .with_component(BasicWallet)
+        .build_existing()
+        .expect("account_from_pubkey_commitment_seeded: account must build")
+}
+
 /// Reads the auth component's stored pubkey commitment from account storage.
 ///
 /// `AuthSingleSig` stores the pubkey commitment as a value slot named
