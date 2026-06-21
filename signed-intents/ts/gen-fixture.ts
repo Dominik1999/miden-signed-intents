@@ -4,8 +4,15 @@
 import "./wasmFetch.js";
 
 import { writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { AuthSecretKey } from "@miden-sdk/miden-sdk";
 import { signIntent, type IntentInput } from "./signIntent.js";
+
+// Default output path (relative to this script's directory, i.e. ts/).
+// Override with the FIXTURE_OUT env var — e.g. when the Rust walkthrough_ts
+// test wants to write to a separate path without clobbering the committed fixture.
+const defaultOut = resolve(new URL(".", import.meta.url).pathname, "../tests/fixtures/intent_signed.json");
+const outPath = process.env.FIXTURE_OUT ?? defaultOut;
 
 const intent: IntentInput = {
   userPrefix: 0xAAAAn,
@@ -20,9 +27,9 @@ const intent: IntentInput = {
 const key = AuthSecretKey.ecdsaWithRNG();
 const { signatureHex, publicKeyHex, messageWordHex } = signIntent(key, intent);
 
-mkdirSync("../tests/fixtures", { recursive: true });
+mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(
-  "../tests/fixtures/intent_signed.json",
+  outPath,
   JSON.stringify(
     {
       intent: {
@@ -35,4 +42,4 @@ writeFileSync(
     null, 2,
   ),
 );
-console.log("wrote tests/fixtures/intent_signed.json");
+console.log(`wrote ${outPath}`);

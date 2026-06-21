@@ -59,6 +59,23 @@ pub fn user_id_word(account_id: AccountId) -> Word {
     ])
 }
 
+/// Build a depositor account whose native auth component is `AuthSingleSig` over a GIVEN
+/// `PublicKeyCommitment` (e.g. derived from a TypeScript-produced public key). No secret key is
+/// held in Rust; the account is usable for verification tests where the private key lives in an
+/// external SDK (TypeScript, hardware wallet, etc.).
+///
+/// This is the Plan 2 binding entry point for the TS→MASM flow: the caller deserialises the TS
+/// public key via `PublicKey::read_from_bytes`, calls `pubkey.to_commitment()`, and passes the
+/// result here. The returned `Account` has the TS key as its native auth key.
+pub fn account_from_pubkey_commitment(pkc: PublicKeyCommitment) -> Account {
+    AccountBuilder::new(rand::random::<[u8; 32]>())
+        .storage_mode(AccountStorageMode::Public)
+        .with_auth_component(AuthSingleSig::new(pkc, AuthScheme::EcdsaK256Keccak))
+        .with_component(BasicWallet)
+        .build_existing()
+        .expect("account_from_pubkey_commitment: account must build")
+}
+
 /// Reads the auth component's stored pubkey commitment from account storage.
 ///
 /// `AuthSingleSig` stores the pubkey commitment as a value slot named
