@@ -162,3 +162,37 @@ fn an_expired_intent_is_rejected() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 5. Wrong depositor (user_id binding)
+// ---------------------------------------------------------------------------
+
+/// A signature valid for depositor A is replayed against an intent that names
+/// depositor B.  The on-chain Poseidon2 reconstruction hashes `user_prefix = B`
+/// (and all other fields) into a different MSG, so ECDSA recovery returns the
+/// wrong public key; the commitment guard rejects it.
+#[test]
+fn a_replayed_signature_for_a_different_depositor_is_rejected() {
+    let k = key();
+    let mut chain = new_chain();
+    let dep = deploy_operator(&mut chain, &k.public_key());
+
+    // Sign an intent for depositor A (user_prefix = 0xAAAA, the default).
+    let signed_for_a = make_intent(1, 100_000);
+    let sig_hex = sign(&k, &signed_for_a);
+
+    // Construct an otherwise-identical intent but for a different depositor.
+    let mut for_b = signed_for_a;
+    for_b.user_prefix = 0xDEAD;
+
+    // Relay depositor B's intent with depositor A's valid signature.
+    let r = relay_intent(&mut chain, &dep, &for_b, &sig_hex);
+    match r {
+        Err(RelayError::Rejected(ref msg)) => {
+            // The tamper is caught at the on-chain commitment check: the recovered
+            // pubkey differs from the stored commitment because the hashed MSG
+            // changed when user_prefix changed.
+            assert!(!msg.is_empty(), "wrong depositor: rejection message must not be empty");
+        }
+        other => panic!("wrong-depositor intent must be rejected; got: {:?}", other),
+    }
+}
