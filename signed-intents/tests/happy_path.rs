@@ -1,37 +1,42 @@
-//! Task 6 happy-path test: deploy the operator account on MockChain, relay a valid signed
+//! Happy-path test: deploy the operator account on MockChain, relay a valid signed
 //! intent, and assert the on-chain storage was updated correctly.
 
-use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::utils::serde::Serializable as _;
 use signed_intents::intent::Intent;
-use signed_intents::relayer::{deploy_operator, new_chain, read_last_authorized, read_last_nonce, relay_intent};
+use signed_intents::relayer::{
+    deploy_operator, new_chain, read_last_authorized, read_last_nonce, relay_intent,
+};
+use signed_intents::user_account::{new_depositor, user_id_word};
+use miden_protocol::utils::serde::Serializable as _;
 
-fn sample_intent() -> Intent {
-    Intent {
-        user_prefix: 0xAAAA,
-        user_suffix: 0xBBBB,
+#[test]
+fn valid_intent_is_authorized_and_recorded() {
+    // Build a real native-ECDSA depositor (seed=1 → deterministic key).
+    let d = new_depositor(1);
+    let uid = user_id_word(d.account.id());
+
+    // Extract the depositor's account-id halves so the intent names the right user.
+    let id_prefix = d.account.id().prefix().as_felt().as_canonical_u64();
+    let id_suffix = d.account.id().suffix().as_canonical_u64();
+
+    // Construct the intent whose user_prefix/user_suffix identify this depositor.
+    let intent = Intent {
+        user_prefix: id_prefix,
+        user_suffix: id_suffix,
         recipient_prefix: 0x1234,
         recipient_suffix: 0x5678,
         amount: 1000,
         nonce: 1,
         expiry_block: 100_000,
-    }
-}
-
-#[test]
-fn valid_intent_is_authorized_and_recorded() {
-    let mut rng = rand::rng();
-    let key = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
+    };
 
     // User signs off-chain.
-    let intent = sample_intent();
     let msg = intent.message_word();
-    let signature = key.sign(msg);
+    let signature = d.key.sign(msg);
     let sig_hex = hex::encode(signature.to_bytes());
 
-    // Relayer deploys + submits.
+    // Relayer deploys the operator with this depositor seeded in the map, then submits.
     let mut chain = new_chain();
-    let deployed = deploy_operator(&mut chain, &key.public_key());
+    let deployed = deploy_operator(&mut chain, &[(uid, d.commitment)]);
     relay_intent(&mut chain, &deployed, &intent, &sig_hex)
         .expect("valid intent must settle");
 
