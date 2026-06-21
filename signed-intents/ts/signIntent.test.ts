@@ -4,6 +4,8 @@ import { intentFelts, messageWord, signIntent, wordToHex } from "./signIntent.js
 import { AuthSecretKey, PublicKey, Signature } from "@miden-sdk/miden-sdk";
 
 const SAMPLE = {
+  userPrefix: 0xAAAAn,
+  userSuffix: 0xBBBBn,
   recipientPrefix: 0x1234n,
   recipientSuffix: 0x5678n,
   amount: 1000n,
@@ -11,14 +13,13 @@ const SAMPLE = {
   expiryBlock: 500n,
 };
 
-// Frozen in Task 4 from the Rust golden run (Poseidon2). Cross-language agreement check.
-// Rust Word::as_bytes() = 4 × little-endian u64 values concatenated, hex-encoded.
+// Cross-language agreement: must equal the Rust golden (tests/golden.rs).
 const GOLDEN_WORD_HEX =
-  "51dca2817b795ff469c66a03bbe4a5c2145458b6e1df4d257eb47e835f309622";
+  "cd14e20aa24e67a4a0d09293e885236caaaa22d4e858ae04a9015a9fcf045e70";
 
 describe("signed intent", () => {
   it("encodes canonical felts in the agreed order", () => {
-    expect(intentFelts(SAMPLE)).toEqual([1n, 0x1234n, 0x5678n, 1000n, 1n, 500n]);
+    expect(intentFelts(SAMPLE)).toEqual([1n, 0xAAAAn, 0xBBBBn, 0x1234n, 0x5678n, 1000n, 1n, 500n]);
   });
 
   it("hashes to the same Word as the Rust side", () => {

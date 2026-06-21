@@ -1,13 +1,15 @@
-//! Task 6 happy-path test: deploy the authorizer account on MockChain, relay a valid signed
+//! Task 6 happy-path test: deploy the operator account on MockChain, relay a valid signed
 //! intent, and assert the on-chain storage was updated correctly.
 
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::utils::serde::Serializable as _;
 use signed_intents::intent::Intent;
-use signed_intents::relayer::{deploy_authorizer, new_chain, read_last_authorized, read_last_nonce, relay_intent};
+use signed_intents::relayer::{deploy_operator, new_chain, read_last_authorized, read_last_nonce, relay_intent};
 
 fn sample_intent() -> Intent {
     Intent {
+        user_prefix: 0xAAAA,
+        user_suffix: 0xBBBB,
         recipient_prefix: 0x1234,
         recipient_suffix: 0x5678,
         amount: 1000,
@@ -29,7 +31,7 @@ fn valid_intent_is_authorized_and_recorded() {
 
     // Relayer deploys + submits.
     let mut chain = new_chain();
-    let deployed = deploy_authorizer(&mut chain, &key.public_key());
+    let deployed = deploy_operator(&mut chain, &key.public_key());
     relay_intent(&mut chain, &deployed, &intent, &sig_hex)
         .expect("valid intent must settle");
 

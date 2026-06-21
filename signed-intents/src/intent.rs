@@ -7,24 +7,31 @@ use miden_protocol::{Felt, Word};
 /// replayed as another. See the cancel/withdraw tags in the perp repo.
 pub const DOMAIN_TRANSFER: u64 = 1;
 
-/// A user's authorization to move `amount` to a recipient.
+/// A user's authorization to move `amount` to a recipient, bound to the
+/// depositor's account id so the operator knows whose funds are moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Intent {
+    /// Depositor (User Account) id, high word.
+    pub user_prefix: u64,
+    /// Depositor (User Account) id, low word.
+    pub user_suffix: u64,
     pub recipient_prefix: u64,
     pub recipient_suffix: u64,
     pub amount: u64,
-    /// Per-account strictly-increasing replay guard.
+    /// Per-depositor strictly-increasing replay guard.
     pub nonce: u64,
     /// Intent is invalid once the chain reaches this block height.
     pub expiry_block: u64,
 }
 
 impl Intent {
-    /// The exact field elements that are hashed to the signed Word.
+    /// The exact field elements hashed to the signed Word.
     /// MUST match the TypeScript `intentFelts` ordering byte-for-byte.
     pub fn canonical_felts(&self) -> Vec<u64> {
         vec![
             DOMAIN_TRANSFER,
+            self.user_prefix,
+            self.user_suffix,
             self.recipient_prefix,
             self.recipient_suffix,
             self.amount,

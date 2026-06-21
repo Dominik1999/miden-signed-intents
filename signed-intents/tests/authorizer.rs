@@ -5,23 +5,23 @@
 //!  2. `verify_as_oracle_accepts_a_valid_intent` — the VERIFY-AS-ORACLE: the on-chain
 //!     MSG reconstruction in `execute_intent` must produce the SAME Word as Rust
 //!     `Poseidon2::hash_elements`. We prove this indirectly but rigorously: we put the
-//!     signer's pubkey commitment in slot 0, sign the 6 canonical felts, and run a
+//!     signer's pubkey commitment in slot 0, sign the 8 canonical felts, and run a
 //!     transaction that calls `execute_intent`. The ECDSA `verify` proc aborts unless
 //!     `to_commitment(pk) == storage slot 0` AND the signature verifies against the
 //!     reconstructed MSG. So a PASSING transaction proves the MASM hash is byte-correct.
 
-const AUTHORIZER_MASM: &str = include_str!("../masm/authorizer.masm");
+const AUTHORIZER_MASM: &str = include_str!("../masm/operator.masm");
 
 #[test]
 fn authorizer_assembles() {
     use miden_client::assembly::CodeBuilder;
 
     let result = CodeBuilder::default()
-        .compile_component_code("signed_intents::authorizer", AUTHORIZER_MASM);
+        .compile_component_code("signed_intents::operator", AUTHORIZER_MASM);
 
     assert!(
         result.is_ok(),
-        "authorizer.masm must assemble as an account component: {:?}",
+        "operator.masm must assemble as an account component: {:?}",
         result.err()
     );
 }
@@ -36,6 +36,8 @@ fn verify_as_oracle_accepts_a_valid_intent() {
 
     // The sample intent. Its Rust message Word is the on-chain MSG anchor.
     let intent = Intent {
+        user_prefix: 0xabcd,
+        user_suffix: 0xef01,
         recipient_prefix: 0x1234,
         recipient_suffix: 0x5678,
         amount: 1000,
@@ -65,19 +67,19 @@ fn verify_as_oracle_accepts_a_valid_intent() {
     );
 }
 
-/// The transaction harness: build an account carrying the authorizer component (slot 0 =
-/// owner pubkey commitment), then run a tx script that pushes the 6 intent felts and the
+/// The transaction harness: build an account carrying the operator component (slot 0 =
+/// owner pubkey commitment), then run a tx script that pushes the 8 intent felts and the
 /// prepared signature (PK||SIG) on the advice stack and `call`s `execute_intent`.
 mod oracle {
     use miden_protocol::account::auth::{PublicKey, Signature};
     use signed_intents::intent::Intent;
 
-    const AUTHORIZER_MASM: &str = include_str!("../masm/authorizer.masm");
+    const AUTHORIZER_MASM: &str = include_str!("../masm/operator.masm");
 
-    // Slot names MUST match the `word("...")` constants in authorizer.masm.
-    const OWNER_PK_SLOT: &str = "signed_intents::authorizer::owner_pubkey_commitment";
-    const LAST_NONCE_SLOT: &str = "signed_intents::authorizer::last_nonce";
-    const LAST_AUTH_SLOT: &str = "signed_intents::authorizer::last_authorized";
+    // Slot names MUST match the `word("...")` constants in operator.masm.
+    const OWNER_PK_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
+    const LAST_NONCE_SLOT: &str = "signed_intents::operator::last_nonce";
+    const LAST_AUTH_SLOT: &str = "signed_intents::operator::last_authorized";
 
     pub fn run_execute_intent(
         intent: &Intent,
@@ -108,7 +110,7 @@ mod oracle {
 
         // --- Assemble the authorizer component library. ---
         let library = CodeBuilder::default()
-            .compile_component_code("signed_intents::authorizer", AUTHORIZER_MASM)?;
+            .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)?;
 
         // --- Build the account with the component + its three named storage slots. ---
         let owner_slot = StorageSlotName::new(OWNER_PK_SLOT)?;
@@ -124,7 +126,7 @@ mod oracle {
                 StorageSlot::with_value(nonce_slot, Word::from([0u32, 0, 0, 0])),
                 StorageSlot::with_value(auth_slot, Word::from([0u32, 0, 0, 0])),
             ],
-            AccountComponentMetadata::mock("signed_intents::authorizer"),
+            AccountComponentMetadata::mock("signed_intents::operator"),
         )?;
 
         let account = AccountBuilder::new(rand::random())
@@ -132,28 +134,34 @@ mod oracle {
             .with_component(component)
             .build_existing()?;
 
-        // --- Transaction script: push 6 intent felts, then call execute_intent. ---
+        // --- Transaction script: push 8 intent felts, then call execute_intent. ---
+        // Canonical order (top->down once pushed):
+        //   [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry]
+        // `push` puts its last operand on top, so we list them deepest-first (expiry) to
+        // top-most (domain).
         let felts = intent.canonical_felts();
         let tx_script_code = format!(
             r#"
-            use signed_intents::authorizer->authorizer
+            use signed_intents::operator->operator
             use miden::core::sys
 
             begin
-                push.{expiry}.{nonce}.{amount}.{r_suf}.{r_pre}.{domain}
-                # => [DOMAIN, r_pre, r_suf, amount, nonce, expiry, pad...]
-                call.authorizer::execute_intent
+                push.{expiry}.{nonce}.{amount}.{r_suf}.{r_pre}.{user_suf}.{user_pre}.{domain}
+                # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, pad...]
+                call.operator::execute_intent
                 # The call frame leaves the script stack deeper than 16; truncate before the
                 # program returns so the kernel's depth-16 exit invariant holds.
                 exec.sys::truncate_stack
             end
             "#,
             domain = felts[0],
-            r_pre = felts[1],
-            r_suf = felts[2],
-            amount = felts[3],
-            nonce = felts[4],
-            expiry = felts[5],
+            user_pre = felts[1],
+            user_suf = felts[2],
+            r_pre = felts[3],
+            r_suf = felts[4],
+            amount = felts[5],
+            nonce = felts[6],
+            expiry = felts[7],
         );
 
         let tx_script = CodeBuilder::default()
@@ -180,7 +188,7 @@ fn verify_as_oracle_negative_hits_the_commitment_guard() {
     use signed_intents::intent::Intent;
     let mut rng = rand::rng();
     let key = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
-    let intent = Intent { recipient_prefix: 0x1234, recipient_suffix: 0x5678, amount: 1000, nonce: 1, expiry_block: 500 };
+    let intent = Intent { user_prefix: 0xabcd, user_suffix: 0xef01, recipient_prefix: 0x1234, recipient_suffix: 0x5678, amount: 1000, nonce: 1, expiry_block: 500 };
     let sig = key.sign(intent.message_word());
     let tampered = Intent { amount: 9999, ..intent };
     let err = oracle::run_execute_intent(&tampered, &key.public_key(), &sig).unwrap_err();

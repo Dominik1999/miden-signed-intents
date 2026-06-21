@@ -2,6 +2,8 @@ use signed_intents::intent::{Intent, DOMAIN_TRANSFER};
 
 fn sample_intent() -> Intent {
     Intent {
+        user_prefix: 0xAAAA,
+        user_suffix: 0xBBBB,
         recipient_prefix: 0x1234,
         recipient_suffix: 0x5678,
         amount: 1_000,
@@ -15,7 +17,7 @@ fn canonical_felts_are_in_the_agreed_order() {
     let i = sample_intent();
     assert_eq!(
         i.canonical_felts(),
-        vec![DOMAIN_TRANSFER, 0x1234, 0x5678, 1_000, 1, 500]
+        vec![DOMAIN_TRANSFER, 0xAAAA, 0xBBBB, 0x1234, 0x5678, 1_000, 1, 500]
     );
 }
 
@@ -31,7 +33,7 @@ fn message_word_matches_the_golden_vector() {
     // (ead149459c102c63dffeadd553e3bd50ae48d32af53267ad42eb49c0382a3136), which the VM cannot
     // reproduce. The Task 4 TS signer must hash with Poseidon2 and assert THIS hex.
     const GOLDEN_WORD_HEX: &str =
-        "51dca2817b795ff469c66a03bbe4a5c2145458b6e1df4d257eb47e835f309622";
+        "cd14e20aa24e67a4a0d09293e885236caaaa22d4e858ae04a9015a9fcf045e70";
     let i = sample_intent();
     assert_eq!(hex::encode(i.message_word().as_bytes()), GOLDEN_WORD_HEX);
 }

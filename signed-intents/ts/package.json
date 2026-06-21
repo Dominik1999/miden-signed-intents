@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "demo": "tsx demo.ts"
+    "demo": "tsx demo.ts",
+    "gen-fixture": "tsx gen-fixture.ts"
   },
   "dependencies": {
     "@miden-sdk/miden-sdk": "0.14"
