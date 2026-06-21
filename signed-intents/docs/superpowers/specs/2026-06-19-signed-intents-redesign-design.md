@@ -79,21 +79,25 @@ index  field                type    notes
 2      user_id_suffix       felt    depositor's User Account ID, low word
 3      recipient_prefix     felt    payout recipient account ID, high word
 4      recipient_suffix     felt    payout recipient account ID, low word
-5      faucet_id            felt    asset faucet ID
-6      amount               felt    asset amount to move out of the deposit
-7      nonce                felt    strictly increasing per depositor
-8      expiry               felt    block height; intent invalid at/after this block
+5      amount               felt    asset amount to move out of the deposit
+6      nonce                felt    strictly increasing per depositor
+7      expiry               felt    block height; intent invalid at/after this block
 ```
 
 - **Encoding:** Miden field elements (`Felt`, u64 in the Goldilocks field). No floats, no variable-length encoding.
-- **Array handling:** fixed-length array of 9 felts; no dynamic arrays at the serialization boundary.
+- **Array handling:** fixed-length array of 8 felts; no dynamic arrays at the serialization boundary.
+- **The asset faucet is operator configuration, NOT a signed field.** The operator custodies a single
+  asset type; `faucet_id` is fixed by the operator account and therefore does not appear in the intent.
+  Keeping the message at **8 felts (= RATE_WIDTH)** also keeps the on-chain Poseidon2 reconstruction a
+  single `hperm`, which is materially simpler MASM. If multi-asset support is needed later, `faucet_id`
+  can be added back as a 9th felt at the cost of a two-permutation sponge.
 - **`user_id` is a signed field** (indices 1–2): the intent is bound to one depositor, and the operator can
   index its per-depositor storage by it. The recipient (3–4) is a Miden account ID; the actual P2ID
   RECIPIENT digest is derived inside the contract from these felts.
-- **Serialization boundary:** the 9-felt vector is the canonical signable object. Transport wraps it as
+- **Serialization boundary:** the 8-felt vector is the canonical signable object. Transport wraps it as
   `{ intent, signatureHex, publicKeyHex, userAccountId }`; those wrapper fields are **not** re-hashed.
 
-A **golden vector** (the exact 9 felts and the resulting digest hex) is published and asserted by tests on
+A **golden vector** (the exact 8 felts and the resulting digest hex) is published and asserted by tests on
 both sides, so cross-language agreement is proven, not assumed.
 
 ## 5. Where the operator's knowledge of the pubkey comes from
@@ -115,7 +119,7 @@ funds on a signed intent" is equivalent to "the account owner authorized moving 
    keyed by `user_id`.
 
 **Phase B — Intent (off-chain, just a signature)**
-2. User builds the 9-felt intent (§4), hashes it `MSG = Poseidon2::hash(intent)`, and **signs `MSG`** with
+2. User builds the 8-felt intent (§4), hashes it `MSG = Poseidon2::hash(intent)`, and **signs `MSG`** with
    the same ECDSA key. Sends `{ intent, signature, publicKey, userAccountId }` to the operator.
 
 **Phase C — Off-chain pre-check (operator, Rust) — fail fast before gas**
@@ -145,7 +149,7 @@ funds on a signed intent" is equivalent to "the account owner authorized moving 
 |---|---|---|
 | User Account (ECDSA native auth) | `src/…` | Built with `Auth::BasicAuth { EcdsaK256Keccak }`; authorizes the deposit; owns the signing key. |
 | Operator Account + verifier MASM | `masm/operator.masm`, `src/…` | Per-depositor storage (pubkey, balance, nonce); deposit handler; intent verifier + payout. |
-| TS "wallet" signer | `ts/signIntent.ts` | Build 9-felt intent → Poseidon2 → `AuthSecretKey(EcdsaK256Keccak).sign()`; emit `{ signature, publicKey, userAccountId }`. |
+| TS "wallet" signer | `ts/signIntent.ts` | Build 8-felt intent → Poseidon2 → `AuthSecretKey(EcdsaK256Keccak).sign()`; emit `{ signature, publicKey, userAccountId }`. |
 | Rust operator/relayer | `src/relayer.rs` | Off-chain pre-check (§6 Phase C); assemble + submit the settlement tx. |
 
 ### MASM verifier (operator account), in the clearer style (§10)
