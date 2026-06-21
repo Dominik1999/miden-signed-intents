@@ -9,8 +9,7 @@
 
 use std::fs;
 
-use miden_protocol::account::auth::PublicKey;
-use miden_protocol::utils::serde::{Deserializable, Serializable as _};
+use miden_protocol::utils::serde::Serializable as _;
 use serde_json::Value;
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{
@@ -18,14 +17,6 @@ use signed_intents::relayer::{
     relay_intent, RelayError,
 };
 use signed_intents::user_account::{new_depositor, stored_auth_commitment, user_id_word};
-
-fn hex_u64(v: &Value) -> u64 {
-    match v {
-        Value::String(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap(),
-        Value::Number(n) => n.as_u64().unwrap(),
-        _ => panic!("unexpected json type"),
-    }
-}
 
 #[test]
 fn walkthrough_signed_intent_flow() {
