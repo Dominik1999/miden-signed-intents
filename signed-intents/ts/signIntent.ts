@@ -10,6 +10,8 @@ import {
 const DOMAIN_TRANSFER = 1n;
 
 export interface IntentInput {
+  userPrefix: bigint;
+  userSuffix: bigint;
   recipientPrefix: bigint;
   recipientSuffix: bigint;
   amount: bigint;
@@ -18,12 +20,14 @@ export interface IntentInput {
 }
 
 /** Canonical felt vector — MUST match Rust `Intent::canonical_felts`.
- *
- * Order: [DOMAIN_TRANSFER=1, recipientPrefix, recipientSuffix, amount, nonce, expiryBlock]
+ *  Order: [DOMAIN_TRANSFER, userPrefix, userSuffix, recipientPrefix,
+ *          recipientSuffix, amount, nonce, expiryBlock]
  */
 export function intentFelts(i: IntentInput): bigint[] {
   return [
     DOMAIN_TRANSFER,
+    i.userPrefix,
+    i.userSuffix,
     i.recipientPrefix,
     i.recipientSuffix,
     i.amount,
