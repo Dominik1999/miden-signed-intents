@@ -30,7 +30,7 @@ use miden_testing::{Auth, MockChain};
 
 use crate::intent::Intent;
 
-const AUTHORIZER_MASM: &str = include_str!("../masm/operator.masm");
+const OPERATOR_MASM: &str = include_str!("../masm/operator.masm");
 
 const OPERATOR_KEY_SLOT: &str = "signed_intents::operator::owner_pubkey_commitment";
 const LAST_NONCE_SLOT: &str = "signed_intents::operator::last_nonce";
@@ -73,7 +73,7 @@ pub fn new_chain() -> MockChain {
 /// Slot 0 = `owner.to_commitment()`; slots 1 and 2 are zeroed (last_nonce, last_authorized).
 pub fn deploy_operator(chain: &mut MockChain, owner: &PublicKey) -> DeployedOperator {
     let library = CodeBuilder::default()
-        .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
+        .compile_component_code("signed_intents::operator", OPERATOR_MASM)
         .expect("operator.masm must assemble");
 
     let owner_slot = StorageSlotName::new(OPERATOR_KEY_SLOT).expect("slot name must parse");
@@ -166,7 +166,7 @@ pub fn relay_intent(
 
     // Assemble the tx script that calls `execute_intent` with the 8 canonical intent felts.
     let library = CodeBuilder::default()
-        .compile_component_code("signed_intents::operator", AUTHORIZER_MASM)
+        .compile_component_code("signed_intents::operator", OPERATOR_MASM)
         .expect("operator.masm must assemble");
 
     let felts = intent.canonical_felts();

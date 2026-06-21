@@ -10,6 +10,7 @@ use serde_json::Value;
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{deploy_operator, new_chain, read_last_nonce, relay_intent};
 
+/// Parses a fixture JSON value that is either a hex string ("0xAAAA") or a decimal number.
 fn hex_u64(v: &Value) -> u64 {
     match v {
         Value::String(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap(),

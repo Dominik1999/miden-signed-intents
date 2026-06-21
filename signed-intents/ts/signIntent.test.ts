@@ -13,7 +13,7 @@ const SAMPLE = {
   expiryBlock: 500n,
 };
 
-// Frozen from the Rust golden run in Task 1 (Poseidon2). Paste the SAME hex.
+// Cross-language agreement: must equal the Rust golden (tests/golden.rs).
 const GOLDEN_WORD_HEX =
   "cd14e20aa24e67a4a0d09293e885236caaaa22d4e858ae04a9015a9fcf045e70";
 
