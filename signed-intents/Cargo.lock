@@ -3725,6 +3725,7 @@ dependencies = [
  "miden-protocol",
  "miden-testing",
  "rand 0.9.4",
+ "serde_json",
  "tokio",
 ]
 

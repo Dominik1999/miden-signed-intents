@@ -21,3 +21,4 @@ tokio = { version = "1.46", features = ["rt"] }
 # Additional tokio features for test harnesses.
 tokio = { version = "1.46", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
+serde_json = "1"

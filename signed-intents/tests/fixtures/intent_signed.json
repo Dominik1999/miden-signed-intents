@@ -1,0 +1,14 @@
+{
+  "intent": {
+    "user_prefix": "0xAAAA",
+    "user_suffix": "0xBBBB",
+    "recipient_prefix": "0x1234",
+    "recipient_suffix": "0x5678",
+    "amount": 1000,
+    "nonce": 1,
+    "expiry_block": 500
+  },
+  "signatureHex": "01ffeb859aa82c499adcf268617fe745cde51e3fceff230919b2747d97857c6a9411d02ffc015f3ad23921f93220db8a4635be074bcb363d246230df0593a5224d00",
+  "publicKeyHex": "0103c9a9ed66ef58f945bf33cc62f5116c4489c5960ee25056bda549b1fb1e583df2",
+  "messageWordHex": "cd14e20aa24e67a4a0d09293e885236caaaa22d4e858ae04a9015a9fcf045e70"
+}
