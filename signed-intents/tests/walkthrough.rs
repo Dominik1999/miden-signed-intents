@@ -7,10 +7,7 @@
 //! developer new to the codebase can follow exactly what happens — from key registration
 //! through on-chain MASM verification to adversarial rejection.
 
-use std::fs;
-
 use miden_protocol::utils::serde::Serializable as _;
-use serde_json::Value;
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{
     deploy_operator, new_chain, read_depositor_commitment, read_last_authorized, read_last_nonce,
@@ -175,20 +172,20 @@ fn walkthrough_signed_intent_flow() {
     println!("  primitive in Rust for a self-contained walkthrough.");
     println!();
 
-    // TS fixture cross-reference
-    println!("  --- TypeScript SDK cross-reference ---");
-    println!("  The file tests/fixtures/intent_signed.json was produced by the TS SDK:");
-    let raw = fs::read_to_string("tests/fixtures/intent_signed.json")
-        .expect("tests/fixtures/intent_signed.json must exist");
-    let v: Value = serde_json::from_str(&raw).unwrap();
-    println!("    publicKeyHex  = {}", v["publicKeyHex"].as_str().unwrap());
-    println!("    signatureHex  = {}", v["signatureHex"].as_str().unwrap());
-    println!("    messageWord   = {}", v["messageWordHex"].as_str().unwrap());
+    // Cross-language note. We deliberately do NOT print a second, different
+    // message/signature here: doing so (over a different intent and a different
+    // key) reads like a Rust-vs-TS mismatch, which it is not.
+    println!("  --- Rust and TypeScript agree on the hash ---");
+    println!("  For IDENTICAL inputs, Rust and TypeScript produce the IDENTICAL Poseidon2");
+    println!("  digest — asserted by the golden tests (tests/golden.rs and");
+    println!("  ts/signIntent.test.ts both freeze the same digest for the same felts).");
+    println!("  The MSG above differs from any other example only because the intent");
+    println!("  fields (and the key) differ — not because the two SDKs disagree.");
     println!();
-    println!("  The test `tests/e2e_ts_to_masm.rs::ts_signed_intent_is_accepted_by_the_operator_masm`");
-    println!("  proves that a TS-produced signature verifies correctly in the same MASM.");
-    println!("  (We do not relay the fixture here — step 4 uses our Rust-signed intent for");
-    println!("   a coherent single-depositor flow.)");
+    println!("  For the real \"user signs in TypeScript -> operator verifies in MASM\" flow:");
+    println!("    • tests/walkthrough_ts.rs  — live: TS signs; the user's Miden account id");
+    println!("                                 is the intent's user_id; MASM verifies the sig.");
+    println!("    • tests/e2e_ts_to_masm.rs  — a TS-produced signature verifies in the same MASM.");
     println!();
 
     // =========================================================================
