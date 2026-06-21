@@ -3723,8 +3723,10 @@ dependencies = [
  "hex",
  "miden-client",
  "miden-protocol",
+ "miden-standards",
  "miden-testing",
  "rand 0.9.4",
+ "rand_chacha",
  "serde_json",
  "tokio",
 ]

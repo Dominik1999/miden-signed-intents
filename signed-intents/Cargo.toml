@@ -9,11 +9,15 @@ path = "src/lib.rs"
 
 [dependencies]
 miden-protocol = { version = "0.14" }
+# miden-standards provides AuthSingleSig (native ECDSA auth component built from a key we hold).
+miden-standards = { version = "0.14" }
 miden-client = { version = "0.14", features = ["testing"] }
 # miden-testing is a direct dependency of relayer.rs (MockChain lives there).
 miden-testing = { version = "0.14" }
 hex = "0.4"
 rand = "0.9"
+# rand_chacha gives a seedable, deterministic RNG so each depositor seed -> a distinct, reproducible key.
+rand_chacha = "0.9"
 # tokio is used by relayer.rs to block on async execute() calls.
 tokio = { version = "1.46", features = ["rt"] }
 

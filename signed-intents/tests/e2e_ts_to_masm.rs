@@ -1,11 +1,19 @@
 //! Proves a TypeScript-produced ECDSA signature over the 8-felt intent is accepted
 //! by the operator MASM through the Rust relayer. This is the cross-SDK link: TS
 //! serializes the pubkey + signature, Rust deserializes them, and the VM verifies.
+//!
+//! The fixture has fixed `user_prefix`/`user_suffix` (e.g. 0xAAAA/0xBBBB) chosen by the
+//! TypeScript key-generation script. We seed the operator's depositor map with the word
+//! `[user_prefix, user_suffix, 0, 0]` → `ts_pubkey.to_commitment()`, matching what the
+//! MASM looks up by the intent's user_id. No real Miden AccountId is needed here — the
+//! e2e test proves cross-SDK signature verification through the map path.
 
 use std::fs;
 
+use miden_protocol::Felt;
 use miden_protocol::account::auth::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::Word;
 use serde_json::Value;
 use signed_intents::intent::Intent;
 use signed_intents::relayer::{deploy_operator, new_chain, read_last_nonce, relay_intent};
@@ -41,8 +49,19 @@ fn ts_signed_intent_is_accepted_by_the_operator_masm() {
         .expect("TS-serialized pubkey must deserialize in Rust");
     let signature_hex = v["signatureHex"].as_str().unwrap();
 
+    // Build the depositor-map key from the fixture's user_prefix/user_suffix.
+    // The MASM looks up `[user_prefix, user_suffix, 0, 0]` in the StorageMap, so we seed
+    // exactly that key → the TS pubkey's commitment word.
+    let user_id_word: Word = Word::from([
+        Felt::new(intent.user_prefix),
+        Felt::new(intent.user_suffix),
+        Felt::new(0u64),
+        Felt::new(0u64),
+    ]);
+    let commitment: Word = pubkey.to_commitment().into();
+
     let mut chain = new_chain();
-    let deployed = deploy_operator(&mut chain, &pubkey);
+    let deployed = deploy_operator(&mut chain, &[(user_id_word, commitment)]);
 
     relay_intent(&mut chain, &deployed, &intent, signature_hex)
         .expect("TS-signed intent must be accepted by the operator MASM");

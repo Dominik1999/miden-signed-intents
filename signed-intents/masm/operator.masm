@@ -13,7 +13,11 @@
 #   Operand output : [pad(16)]               (all inputs consumed)
 #
 #   Storage (named slots; the first two felts of each hashed slot name address it):
-#     slot "owner_pubkey_commitment" : Word, the ECDSA pubkey commitment (security boundary)
+#     slot "depositor_keys"          : StorageMap, (user_id_word -> ECDSA pubkey commitment), one
+#                                          entry per depositor. The intent's own [user_pre, user_suf]
+#                                          (= the depositor account id) selects THIS depositor's key
+#                                          (security boundary). Map key is the RAW word
+#                                          [user_pre, user_suf, 0, 0]; the kernel hashes it internally.
 #     slot "last_nonce"              : Word, last accepted nonce in element 0  (replay guard)
 #     slot "last_authorized"         : Word — on-stack order at set_item is [nonce, amount, r_suf, r_pre]
 #                                          (nonce=TOP), produced by loc_loadw_le reversing the stored
@@ -28,6 +32,9 @@
 #       advice  [PK[9], SIG[17]]. Pinned by the Task 2 spike.
 #   - miden::protocol::active_account::get_item
 #       [slot_id_suffix, slot_id_prefix] -> [VALUE]
+#   - miden::protocol::active_account::get_map_item
+#       [slot_id_prefix, slot_id_suffix, KEY] -> [VALUE]   (KEY is the RAW word; kernel hashes it).
+#       Pinned by the Plan 2 spike (masm/spike_plan2.masm, Q1).
 #   - miden::protocol::native_account::set_item
 #       [slot_id_suffix, slot_id_prefix, VALUE] -> [OLD_VALUE]
 #   - miden::protocol::tx::get_block_number  [] -> [num]
@@ -63,7 +70,14 @@ use miden::protocol::native_account
 use miden::protocol::tx
 
 # Named storage slots. The first two felts of the hashed name address the slot.
-const OWNER_PK_SLOT  = word("signed_intents::operator::owner_pubkey_commitment")
+const DEPOSITOR_KEYS_SLOT = word("signed_intents::operator::depositor_keys")
+# KNOWN PLAN-2 LIMITATION: last_nonce is a SINGLE GLOBAL slot, NOT per-depositor.
+# The replay guard is monotonic across ALL depositors, so it never weakens replay
+# protection or fund safety (authorization is per-key via the map). But it is a
+# cross-depositor LIVENESS/griefing vector: one depositor submitting an intent with
+# nonce = u32::MAX permanently locks out every other depositor (no larger u32 nonce
+# exists). Plan 3 must move the nonce into per-depositor state (e.g. alongside the
+# commitment in the map) and re-bound it to u64. See the design spec follow-on section.
 const LAST_NONCE_SLOT = word("signed_intents::operator::last_nonce")
 const LAST_AUTH_SLOT  = word("signed_intents::operator::last_authorized")
 
@@ -86,7 +100,7 @@ const ERR_EXPIRED = "operator: intent has expired (block height >= expiry_block)
 #! Advice:  [PK[9], SIG[17], ...]
 #!
 #! Invocation: call
-@locals(8)
+@locals(12)
 pub proc execute_intent
     # Stack in: [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, pad(8)].
     # We work only on the top 8 inputs (the full canonical intent); the call padding underneath
@@ -110,6 +124,11 @@ pub proc execute_intent
     #            = TOP); Rust Word: word[0]=r_pre, word[1]=r_suf, word[2]=amount, word[3]=nonce.
     #   loc[4] : physical stack [0, 0, expiry, nonce] (nonce deepest) — the scalars carried into
     #            the replay-nonce and expiry checks.
+    #   loc[8] : physical stack [user_pre, user_suf, 0, 0] (user_pre = TOP) — the RAW StorageMap
+    #            key for this depositor, needed AFTER the hash consumes the operands so we can fetch
+    #            the depositor's committed pubkey via get_map_item. The loc_storew_le/loc_loadw_le
+    #            pair is a full round-trip (both use the same _le word reversal, so they cancel),
+    #            restoring [user_pre, user_suf, 0, 0] in exactly the order get_map_item expects.
     dup.6 dup.6 dup.6 dup.6
     # => [r_pre, r_suf, amount, nonce, domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
     # Derivation from [domain(0), user_pre(1), user_suf(2), r_pre(3), r_suf(4), amount(5), nonce(6), expiry(7)]:
@@ -122,6 +141,18 @@ pub proc execute_intent
     dup.6 dup.8 push.0 push.0
     # => [0, 0, expiry, nonce, domain, ...]   (dup.6 → nonce on top; dup.8 → expiry above it; then two pads)
     loc_storew_le.4 dropw
+    # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
+
+    # Stash the RAW map key [user_pre, user_suf, 0, 0] (user_pre = TOP) for the depositor lookup.
+    # Build it with two pads BELOW the two id felts so the top word is exactly [user_pre, user_suf, 0, 0].
+    # Derivation from [domain(0), user_pre(1), user_suf(2), r_pre(3), ...]:
+    #   push.0 → [0, domain, user_pre, user_suf, ...]             (user_suf now at index 3)
+    #   push.0 → [0, 0, domain, user_pre, user_suf, ...]          (user_suf now at index 4, user_pre at 3)
+    #   dup.4  → user_suf : [user_suf, 0, 0, domain, user_pre, ...]   (user_pre now at index 4)
+    #   dup.4  → user_pre : [user_pre, user_suf, 0, 0, domain, ...]
+    push.0 push.0 dup.4 dup.4
+    # => [user_pre, user_suf, 0, 0, domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
+    loc_storew_le.8 dropw
     # => [domain, user_pre, user_suf, r_pre, r_suf, amount, nonce, expiry, ...]
 
     # --- 1. Rebuild MSG = Poseidon2::hash_elements(intent_felts[0..8]). ---
@@ -139,9 +170,15 @@ pub proc execute_intent
     exec.extract_digest_from_hashing_output
     # => [MSG(4), ...]
 
-    # --- 2. Load committed pubkey from storage and verify the signature. ---
-    push.OWNER_PK_SLOT[0..2] exec.active_account::get_item
-    # => [PK_COMM, MSG, pad...]
+    # --- 2. Load THIS depositor's committed pubkey from the map and verify the signature. ---
+    # The map is keyed by the depositor's account-id word; the intent's own [user_pre, user_suf]
+    # selects the row, so a relayer cannot point one depositor's intent at another's key.
+    padw loc_loadw_le.8
+    # => [user_pre, user_suf, 0, 0, MSG, pad...]   (raw map KEY restored; user_pre = TOP)
+    push.DEPOSITOR_KEYS_SLOT[0..2]
+    # => [slot_prefix, slot_suffix, user_pre, user_suf, 0, 0, MSG, pad...]
+    exec.active_account::get_map_item
+    # => [PK_COMM, MSG, pad...]   (kernel hashes the RAW key internally; returns the seeded commitment)
     exec.ecdsa_k256_keccak::verify
     # => [pad...]   (aborts the tx if commitment or signature is invalid)
 
